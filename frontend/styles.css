@@ -1,0 +1,178 @@
+/* Travel Agent — Apple-inspired base
+   Soft gray bg, dark gray text, generous radii, SF type stack.
+*/
+:root {
+  --bg: #F5F5F7;          /* Apple's signature gray */
+  --paper: #FFFFFF;
+  --paper-2: #FBFBFD;
+  --ink: #1D1D1F;         /* Apple's near-black */
+  --ink-2: #424245;       /* secondary text */
+  --muted: #86868B;       /* Apple's tertiary gray */
+  --rule: #D2D2D7;
+  --rule-soft: #E5E5EA;
+  --accent: #1D1D1F;       /* graphite — neutral, Apple's "black pill" CTA */
+  --accent-hover: #2C2C2E;
+  --accent-soft: #ECECEE;
+  --tag: #F2F2F2;
+
+  --serif: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", "Inter", sans-serif;
+  --sans:  -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Inter", sans-serif;
+  --mono:  "SF Mono", ui-monospace, "JetBrains Mono", monospace;
+
+  --r-sm: 10px;
+  --r-md: 16px;
+  --r-lg: 22px;
+  --r-xl: 28px;
+  --r-pill: 980px;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-lg: 0 18px 48px rgba(0,0,0,0.10), 0 2px 6px rgba(0,0,0,0.05);
+}
+
+[data-palette="sage"] {
+  --bg: #EFF2EC;
+  --paper: #FFFFFF;
+  --paper-2: #F6F8F2;
+  --ink: #1C231A;
+  --ink-2: #455143;
+  --muted: #8A938A;
+  --rule: #D2DAC9;
+  --rule-soft: #E2E8D9;
+  --accent: #3F7A2A;
+  --accent-hover: #4A8930;
+  --accent-soft: #E2EED7;
+  --tag: #EBEFE3;
+}
+
+[data-palette="slate"] {
+  --bg: #ECEEF2;
+  --paper: #FFFFFF;
+  --paper-2: #F5F7FB;
+  --ink: #131722;
+  --ink-2: #444A58;
+  --muted: #7B8290;
+  --rule: #CDD3DE;
+  --rule-soft: #E1E5EC;
+  --accent: #2A5BA0;
+  --accent-hover: #3068B6;
+  --accent-soft: #DCE6F4;
+  --tag: #E6E9EE;
+}
+
+[data-palette="ink"] {
+  --bg: #000000;
+  --paper: #1C1C1E;
+  --paper-2: #2C2C2E;
+  --ink: #F5F5F7;
+  --ink-2: #C7C7CC;
+  --muted: #86868B;
+  --rule: #3A3A3C;
+  --rule-soft: #2C2C2E;
+  --accent: #F5F5F7;       /* graphite-on-dark — light gray */
+  --accent-hover: #FFFFFF;
+  --accent-soft: #2C2C2E;
+  --tag: #2C2C2E;
+}
+
+* { box-sizing: border-box; }
+
+.artboard-root {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
+  letter-spacing: -0.003em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.artboard-root .serif {
+  font-family: var(--serif);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: var(--ink);
+}
+.artboard-root .mono {
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+  font-size: 11px;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+.artboard-root .muted { color: var(--muted); }
+.artboard-root .ink2 { color: var(--ink-2); }
+.artboard-root .accent { color: var(--accent); }
+
+.artboard-root h1, .artboard-root h2, .artboard-root h3, .artboard-root h4,
+.artboard-root p, .artboard-root ul, .artboard-root ol {
+  margin: 0; padding: 0;
+}
+.artboard-root ul, .artboard-root ol { list-style: none; }
+.artboard-root button { font-family: inherit; cursor: pointer; }
+.artboard-root a { color: inherit; text-decoration: none; }
+
+/* Apple-style buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 22px;
+  border-radius: var(--r-pill);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  border: none;
+  cursor: pointer;
+  transition: background 160ms ease, transform 120ms ease;
+}
+.btn:active { transform: scale(0.97); }
+.btn.primary {
+  background: var(--accent);
+  color: #fff;
+}
+.btn.primary:hover { background: var(--accent-hover); }
+.btn.secondary {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--rule);
+}
+.btn.secondary:hover { background: var(--rule-soft); }
+.btn.tag {
+  background: var(--tag);
+  color: var(--ink);
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* Card */
+.card {
+  background: var(--paper);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm);
+}
+.card-lg {
+  background: var(--paper);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-md);
+}
+
+/* Pin highlight */
+.pin {
+  cursor: pointer;
+  transition: transform 220ms cubic-bezier(.2,.7,.3,1.4);
+}
+.pin:hover { transform: scale(1.18); }
+.pin.is-active { transform: scale(1.32); }
+
+.daycard {
+  transition: background 240ms ease, box-shadow 240ms ease, transform 240ms ease, border-color 240ms ease;
+}
+.daycard:hover { transform: translateY(-1px); }
+
+@keyframes chatdot {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; }
+  40% { transform: scale(1); opacity: 1; }
+}
