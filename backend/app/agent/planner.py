@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.config import get_settings
 from app.data.mock_data import JAPAN_PACK, itinerary_for_profile
@@ -11,16 +12,18 @@ from app.models import (
     PlanTripResponse,
 )
 from app.agent.gemini import generate_text, run_agent_loop
-from app.agent.parser import itinerary_from_gemini, normalize_chat_answer, strip_fences
+from app.agent.parser import itinerary_from_gemini, normalize_chat_answer, parse_day_allocation_string, parse_skeleton, strip_fences
 from app.agent.prompts import (
     _past_trips_section,
     build_chat_system_prompt,
-    build_plan_system_prompt,
-    build_plan_user_message,
+    build_day_system_prompt,
+    build_day_user_message,
+    build_skeleton_prompt,
 )
-from app.agent.request_helpers import day_allocation_from_prompt, destination_for_request, destination_pack_for_request, prompt_for_request, slug
+from app.agent.request_helpers import day_allocation_from_prompt, days_from_prompt, destination_for_request, destination_pack_for_request, prompt_for_request, slug
 from app.agent.tools import CHAT_TOOLS, dispatch_chat_tool
 from app.enrichment.attractions import prefetch_attractions, replace_unknown_attractions
+from app.enrichment.quality import improve_itinerary_quality
 from app.enrichment.restaurants import apply_real_restaurants, apply_validated_coords, prefetch_restaurants, restaurant_identity
 from app.integrations.maps import batch_get_place_details
 
@@ -119,62 +122,139 @@ class TripPlanner:
         repository,
     ) -> tuple[Itinerary, list[str], dict[str, dict]] | None:
         destination = destination_for_request(request)
+        profile = request.profile or base_itinerary.profile
+        days_count = request.days or days_from_prompt(request.prompt) or 5
         tool_trace: list[str] = []
 
-        past_trips = repository._memory_search_trips()
-        past_trips_summary = _past_trips_section(past_trips)
-
-        system_prompt = build_plan_system_prompt()
-
-        # Pre-fetch real attractions so Gemini has concrete names instead of "Explore Tokyo"
+        # ── Phase 1: Prefetch attractions for all cities ──────────────────
         attractions = prefetch_attractions(request, destination, destination_pack)
         if attractions:
             tool_trace.append("prefetch_attractions (Google Maps)")
 
-        day_allocation = request.day_allocation or day_allocation_from_prompt(request.prompt, request.days)
-
-        user_message = build_plan_user_message(
-            request, base_itinerary, [], attractions, "", past_trips_summary, day_allocation
-        )
-
-        text = generate_text(
-            system_prompt=system_prompt,
-            user_message=user_message,
-            temperature=0.45,
-        )
-
-        if not text:
+        # ── Phase 2: Generate skeleton (which city each day) ─────────────
+        skeleton = _build_skeleton(request, destination, days_count, tool_trace)
+        if not skeleton:
             return None
 
-        try:
-            generated = json.loads(strip_fences(text))
-        except json.JSONDecodeError:
+        # ── Phase 3: Per-day generation (parallel) ────────────────────────
+        all_days: list[dict] = []
+        all_places: list[dict] = []
+
+        def _generate_day(day_info: dict) -> tuple[dict | None, list[dict], str]:
+            day_num = day_info["day_number"]
+            city = day_info["city"]
+            city_atts = [a for a in attractions if (a.get("city") or "").lower() == city.lower()]
+
+            day_system = build_day_system_prompt(city)
+            day_user = build_day_user_message(day_num, city, city_atts, profile)
+
+            day_text = generate_text(
+                system_prompt=day_system,
+                user_message=day_user,
+                temperature=0.45,
+            )
+
+            if not day_text:
+                return None, [], f"Day {day_num} ({city}): Gemini returned empty — skipping"
+
+            try:
+                day_json = json.loads(strip_fences(day_text))
+            except json.JSONDecodeError:
+                return None, [], f"Day {day_num} ({city}): invalid JSON — skipping"
+
+            if not isinstance(day_json, dict):
+                return None, [], f"Day {day_num} ({city}): unexpected JSON type — skipping"
+
+            day_json["day_number"] = day_num
+            places = day_json.pop("places", []) if isinstance(day_json.get("places"), list) else []
+            trace = f"Day {day_num} ({city}): {len(day_json.get('segments', []))} segments"
+            return day_json, places, trace
+
+        with ThreadPoolExecutor(max_workers=min(len(skeleton), 6)) as executor:
+            futures = {executor.submit(_generate_day, d): d for d in skeleton}
+            for future in as_completed(futures):
+                day_json, places, trace = future.result()
+                if day_json is not None:
+                    all_days.append(day_json)
+                    all_places.extend(places)
+                tool_trace.append(trace)
+
+        all_days.sort(key=lambda d: d["day_number"])
+
+        if not all_days:
             return None
+
+        # ── Phase 4: Assemble into full itinerary ────────────────────────
+        generated = {
+            "title": f"{destination} {len(all_days)}-Day Tour",
+            "subtitle": f"Personalized {len(all_days)}-day route for {destination}.",
+            "places": all_places,
+            "days": all_days,
+        }
 
         itinerary = itinerary_from_gemini(request, base_itinerary, destination_pack, generated)
         if itinerary is None:
             return None
 
-        # ── Phase 2: Fetch and inject restaurants based on confirmed route ─────
+        # ── Phase 5: Restaurant enrichment ───────────────────────────────
         restaurants = prefetch_restaurants(request, destination, destination_pack) if _wants_food_enrichment(request) else []
         if restaurants:
             tool_trace.append("find_restaurants (Google Maps)")
 
         itinerary = apply_validated_coords(itinerary, restaurants)
         if restaurants:
-            itinerary = apply_real_restaurants(itinerary, restaurants, slug, [])
+            itinerary = apply_real_restaurants(itinerary, restaurants, slug, attractions)
 
-        # ── Phase 2.5: Replace hallucinated attraction names with real ones ──
+        # ── Phase 5.5: Replace hallucinated attraction names ────────────
         if attractions:
             itinerary = replace_unknown_attractions(itinerary, attractions, slug)
             tool_trace.append("replace_unknown_attractions")
 
-        # ── Phase 3: Resolve full place details for winning segments ─────
+        # ── Phase 5.6: Quality review — dedup, weak stops, iconic inject ──
+        itinerary = improve_itinerary_quality(itinerary, request)
+        tool_trace.append("improve_itinerary_quality")
+
+        # ── Phase 6: Resolve full place details ──────────────────────────
         place_details = _resolve_place_details(itinerary, attractions, restaurants)
         if place_details:
             tool_trace.append("batch_get_place_details (Google Maps)")
 
         return itinerary, tool_trace, place_details
+
+def _build_skeleton(
+    request: PlanTripRequest,
+    destination: str,
+    days_count: int,
+    tool_trace: list[str],
+) -> list[dict]:
+    """Build day-to-city skeleton from user prompt or Gemini."""
+
+    # Try parsing day allocation from user prompt first
+    day_allocation = request.day_allocation or day_allocation_from_prompt(request.prompt, request.days)
+    if day_allocation:
+        skeleton = parse_day_allocation_string(day_allocation)
+        if skeleton:
+            tool_trace.append(f"skeleton (from prompt): {len(skeleton)} days")
+            return skeleton
+
+    # Fall back to Gemini skeleton generation
+    skeleton_prompt = build_skeleton_prompt(destination, days_count, request.prompt)
+    skeleton_text = generate_text(
+        system_prompt="You are a route planner. Output only JSON. 只输出JSON。",
+        user_message=skeleton_prompt,
+        temperature=0.3,
+    )
+    if skeleton_text:
+        skeleton = parse_skeleton(skeleton_text)
+        if skeleton:
+            tool_trace.append(f"skeleton (from Gemini): {len(skeleton)} days")
+            return skeleton
+
+    # Last resort: all days in main destination
+    skeleton = [{"day_number": i + 1, "city": destination} for i in range(days_count)]
+    tool_trace.append(f"skeleton (fallback): {len(skeleton)} days in {destination}")
+    return skeleton
+
 
 planner = TripPlanner()
 

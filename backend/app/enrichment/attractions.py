@@ -146,8 +146,32 @@ def _select_attractions(tagged_queries: list[tuple[str, str, str]], limit: int =
     return all_hits[:limit]
 
 
+_ATTRACTION_TAG_LABELS: dict[str, str] = {
+    "temple": "Historic temple",
+    "shrine": "Popular shrine",
+    "museum": "Famous museum",
+    "park": "Scenic park",
+    "garden": "Serene garden",
+    "viewpoint": "Panoramic viewpoint",
+    "shopping": "Shopping street",
+    "market": "Local market",
+    "historic": "Historic district",
+    "landmark": "Iconic landmark",
+    "castle": "Historic castle",
+    "nature": "Nature spot",
+    "culture": "Cultural experience",
+    "wellness": "Wellness retreat",
+    "attraction": "Popular attraction",
+}
+
+
+def _label_for_attraction(attraction: dict) -> str:
+    tag = (attraction.get("tag") or "").lower()
+    return _ATTRACTION_TAG_LABELS.get(tag, "Local attraction")
+
+
 def _enrich_with_descriptions(attractions: list[dict]) -> None:
-    """Fetch a one-line description for each attraction via Place Details (parallel)."""
+    """Fetch editorial summary via Place Details, fall back to tag-based label."""
     if not attractions:
         return
 
@@ -166,6 +190,11 @@ def _enrich_with_descriptions(attractions: list[dict]) -> None:
             idx, desc = future.result()
             if desc:
                 attractions[idx]["description"] = desc
+
+    # Fallback: generate label from tag for attractions without an editorial summary
+    for attraction in attractions:
+        if not attraction.get("description"):
+            attraction["description"] = _label_for_attraction(attraction)
 
 
 # ── Conversion ────────────────────────────────────────────────────────────────
@@ -215,12 +244,13 @@ def replace_unknown_attractions(
     if not prefetched:
         return itinerary
 
-    approved = {_identity(a["name"]): a for a in prefetched}
-
     updated_days = []
     for day in itinerary.days:
         city_attractions = [a for a in prefetched if (a.get("city") or "").lower() == day.area.lower()]
-        fallback = city_attractions or prefetched
+        if not city_attractions:
+            updated_days.append(day)
+            continue
+        city_approved = {_identity(a["name"]): a for a in city_attractions}
         used_names: set[str] = set()
 
         updated_segments = []
@@ -230,14 +260,14 @@ def replace_unknown_attractions(
                 updated_segments.append(seg)
                 continue
 
-            if _identity(seg.title) in approved:
+            if _identity(seg.title) in city_approved:
                 used_names.add(_identity(seg.title))
                 updated_segments.append(seg)
                 continue
 
             # Pick an unused real attraction from the same city
             replacement = next(
-                (a for a in fallback if _identity(a["name"]) not in used_names),
+                (a for a in city_attractions if _identity(a["name"]) not in used_names),
                 None,
             )
             if replacement is None:

@@ -225,27 +225,44 @@ function DirectionB() {
     return labels[String(stop.category || "").toLowerCase()] || iconName.toUpperCase();
   }
 
-  function metaForStop(stop, idx) {
-    const cat = iconNameForStop(stop);
-    const presets = {
-      Train:   { status: "Reserved", price: "¥13,080", actions: ["Navigate", "Tickets"] },
-      Plane:   { status: "Confirmed", price: "—", actions: ["Boarding pass"] },
-      Hotel:   { status: "Booked", price: "—", actions: ["Navigate", "Check-in"] },
-      Onsen:   { status: "Half-board", price: "Incl.", actions: ["Navigate", "Notes"] },
-      Food:    { status: idx % 2 ? "Walk-in" : "Reservation", price: idx % 2 ? "~¥2,400/pp" : "¥6,800/pp", actions: ["Navigate", "Reviews", "Menu"] },
-      Temple:  { status: "Open 6:00–18:00", price: "¥400", actions: ["Navigate", "About"] },
-      Camera:  { status: "Photo spot", price: "Free", actions: ["Navigate", "Reviews"] },
-      Bag:     { status: "Browse", price: "Varies", actions: ["Navigate"] },
-      Walk:    { status: "Easy walk", price: "—", actions: ["Navigate"] },
-    };
-    return presets[cat] || presets.Walk;
+  function fmt(n) {
+    if (n == null) return '';
+    return Number(n).toLocaleString();
   }
 
-  function actionUrl(action, stopName, mapsUrl) {
-    const name = encodeURIComponent(stopName || "");
-    const maps = mapsUrl || `https://www.google.com/maps/search/?api=1&query=${name}`;
-    if (action === "Navigate") return maps;
-    return `https://www.google.com/search?q=${name}+${encodeURIComponent(action.toLowerCase())}`;
+  function metaForStop(stop, idx) {
+    // Rating — inline stars + review count
+    let rating = null;
+    if (stop.rating != null) {
+      const stars = '⭐ ' + stop.rating.toFixed(1);
+      const count = stop.userRatingsTotal ? ` (${fmt(stop.userRatingsTotal)} reviews)` : '';
+      rating = stars + count;
+    }
+
+    // Opening hours — today's entry
+    let hours = null;
+    const oh = stop.openingHours;
+    if (oh && oh.length) {
+      const today = new Date().getDay();
+      const i = today === 0 ? 6 : today - 1;
+      hours = oh[i] || oh[0] || null;
+    }
+
+    // Price level
+    const priceLabels = { 0: 'Free', 1: '$', 2: '$$', 3: '$$$', 4: '$$$$' };
+    let price = (stop.priceLevel != null) ? (priceLabels[stop.priceLevel] || null) : null;
+
+    // Action buttons
+    const actions = [];
+    const mapsUrl = stop.googleMapsUrl || stop.url || '';
+    if (mapsUrl) {
+      actions.push({ label: 'Navigate', url: mapsUrl });
+    }
+    if (stop.website) {
+      actions.push({ label: 'Website', url: stop.website });
+    }
+
+    return { rating, hours, price, actions };
   }
 
   function highlightForStop(stop) {
@@ -467,43 +484,44 @@ function DirectionB() {
                         </div>
                       )}
 
-                      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
-                        <span className="btn tag" style={{
-                          padding: "5px 12px", fontSize: 12, background: "var(--accent-soft)", color: "var(--ink)",
-                        }}>
-                          <span style={{ width: 7, height: 7, borderRadius: 999, background: "var(--accent)", display: "inline-block", marginRight: 6 }} />
-                          {m.status}
-                        </span>
-                        {m.price !== "—" && (
-                          <span className="btn tag" style={{ padding: "5px 12px", fontSize: 12 }}>{m.price}</span>
+                      <div style={{ display: "flex", gap: 12, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+                        {m.rating && (
+                          <span style={{ fontSize: 12, color: "var(--ink-2)" }}>{m.rating}</span>
+                        )}
+                        {m.hours && (
+                          <span style={{ fontSize: 12, color: "var(--ink-2)" }}>🕐 {m.hours}</span>
+                        )}
+                        {m.price && (
+                          <span style={{ fontSize: 12, color: "var(--ink-2)" }}>💰 {m.price}</span>
                         )}
                         {s.duration && (
                           <span className="btn tag" style={{ padding: "5px 12px", fontSize: 12 }}>⏱ {s.duration}</span>
                         )}
                       </div>
 
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        {m.actions.map((a, j) => {
-                          const colors = [
-                            { bg: "var(--ink)",    fg: "var(--bg)" },
-                            { bg: "#C44A2E",       fg: "#fff" },
-                            { bg: "#E6A93B",       fg: "#2A1F00" },
-                          ];
-                          const c = colors[j] || colors[0];
-                          const sharedStyle = {
-                            padding: "8px 14px", fontSize: 12, fontWeight: 600,
-                            background: c.bg, color: c.fg,
-                            textDecoration: "none", display: "inline-flex", alignItems: "center",
-                          };
-                          const url = actionUrl(a, s.k, s.url);
-                          return (
-                            <a key={a} href={url} target="_blank" rel="noreferrer" className="btn" style={sharedStyle}>
-                              {j === 0 && <span style={{ display: "inline-flex", marginRight: 4 }}>📍</span>}
-                              {a}
-                            </a>
-                          );
-                        })}
-                      </div>
+                      {m.actions.length > 0 && (
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          {m.actions.map((a, j) => {
+                            const colors = [
+                              { bg: "var(--ink)",    fg: "var(--bg)" },
+                              { bg: "#C44A2E",       fg: "#fff" },
+                            ];
+                            const c = colors[j] || colors[0];
+                            const sharedStyle = {
+                              padding: "8px 14px", fontSize: 12, fontWeight: 600,
+                              background: c.bg, color: c.fg,
+                              textDecoration: "none", display: "inline-flex", alignItems: "center",
+                            };
+                            const icons = ['📍', '🌐'];
+                            return (
+                              <a key={a.label} href={a.url} target="_blank" rel="noreferrer" className="btn" style={sharedStyle}>
+                                <span style={{ display: "inline-flex", marginRight: 4 }}>{icons[j] || ''}</span>
+                                {a.label}
+                              </a>
+                            );
+                          })}
+                        </div>
+                      )}
                     </article>
                   );
                 })}

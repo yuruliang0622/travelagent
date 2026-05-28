@@ -340,6 +340,87 @@ def _selected_flight_line(selected_flight: dict | None) -> str:
     return "; ".join(parts) if parts else json.dumps(selected_flight, ensure_ascii=False)
 
 
+def build_skeleton_prompt(destination: str, days: int, preferences: str = "") -> str:
+    return (
+        "You are a route planner. Output ONLY a JSON array of day-to-city assignments.\n"
+        "ONLY output which city each day, do NOT write any attraction details.\n"
+        f"Destination: {destination}\n"
+        f"Days: {days}\n"
+        + (f"Preferences: {preferences}\n" if preferences else "")
+        + "Output format (NO other text):\n"
+        '[{"day": 1, "city": "Tokyo"}, {"day": 2, "city": "Hakone"}, ...]\n'
+        "Rules:\n"
+        "- Every day must have exactly one city.\n"
+        "- Use the actual city name, not the country.\n"
+        "- Cities should form a logical geographic route.\n"
+        "- Output ONLY the JSON array, no markdown, no explanation."
+    )
+
+
+def build_day_system_prompt(city: str) -> str:
+    return (
+        f"You are a local guide for {city}. Only recommend attractions and restaurants within {city}.\n"
+        "Do NOT recommend places in any other city.\n"
+        "Use ONLY names from the APPROVED ATTRACTIONS list.\n"
+        "NEVER write 'Explore X', 'Wander X', or 'Free time' — use real attraction names.\n"
+        "ALL output text (titles, descriptions, segment names) MUST be in English.\n"
+        "Output a single day itinerary as JSON with the schema provided in the user message."
+    )
+
+
+def build_day_user_message(
+    day_number: int,
+    city: str,
+    city_attractions: list[dict],
+    profile,
+    day_date: str = "",
+) -> str:
+    import json as _json
+
+    interests = ", ".join(profile.interests) if profile.interests else "general sightseeing"
+    date_line = f"DATE: {day_date}" if day_date else f"DAY: {day_number}"
+
+    attraction_section = ""
+    if city_attractions:
+        attraction_section = "\nAPPROVED ATTRACTIONS (use ONLY these names for non-food segments):\n"
+        for a in city_attractions:
+            meta_parts = []
+            if a.get("neighborhood"):
+                meta_parts.append(a["neighborhood"])
+            if a.get("rating"):
+                meta_parts.append(f"{a['rating']} ⭐")
+            meta = "  |  ".join(meta_parts)
+            attraction_section += f"  • {a['name']}"
+            if meta:
+                attraction_section += f"  |  {meta}"
+            attraction_section += "\n"
+        attraction_section += "HARD RULE: Use names from this list. No invented attraction names.\n"
+
+    return f"""
+CITY: {city}
+{date_line}
+PACE: {profile.pace} | BUDGET: {profile.budget} | TRAVELERS: {profile.travelers}
+INTERESTS: {interests}
+{attraction_section}
+FOOD PREFERENCES: {", ".join(profile.food_preferences) if profile.food_preferences else "no restrictions"}
+
+Output a single day JSON with this schema:
+{{
+  "title": "day title for Day {day_number} in {city}",
+  "area": "{city}",
+  "date": "Day {day_number}",
+  "segments": [
+    {{"time": "09:00", "title": "attraction name from approved list", "description": "short context", "place_id": "", "travel_note": "", "cost": "$"}}
+  ],
+  "places": [
+    {{"id": "short-id", "name": "place name", "category": "attraction|restaurant", "neighborhood": "area", "lat": 0, "lng": 0, "cost": "$", "duration": "~1.5 hr", "why_it_fits": "why this fits", "google_maps_query": "place plus {city}"}}
+  ]
+}}
+Schedule: at least 3 attraction segments, at most 2 meal segments (lunch 12:00-13:30, dinner 18:30-20:30).
+Output ONLY raw JSON, no markdown, no code fences.
+""".strip()
+
+
 def _past_trips_section(trips: list) -> str:
     """Build a concise past-trip summary so the LLM can align with user history."""
     if not trips:

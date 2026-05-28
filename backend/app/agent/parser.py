@@ -58,6 +58,39 @@ def itinerary_from_gemini(
         return None
 
 
+def parse_skeleton(text: str) -> list[dict]:
+    """Parse Gemini skeleton output into list of {day_number, city} dicts."""
+    text = strip_fences(text)
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(raw, list):
+        return []
+    result = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        day = item.get("day") or item.get("day_number") or len(result) + 1
+        city = item.get("city") or item.get("area") or ""
+        if city:
+            result.append({"day_number": int(day), "city": str(city).strip()})
+    return result
+
+
+def parse_day_allocation_string(day_allocation: str) -> list[dict]:
+    """Parse 'D1: Tokyo, D2: Kyoto' into [{day_number, city}, ...]."""
+    if not day_allocation:
+        return []
+    skeleton = []
+    for part in day_allocation.split(","):
+        part = part.strip()
+        match = re.match(r"D(\d+):\s*(.+)", part)
+        if match:
+            skeleton.append({"day_number": int(match.group(1)), "city": match.group(2).strip()})
+    return skeleton
+
+
 def strip_fences(text: str) -> str:
     """Remove markdown code fences that Gemini sometimes wraps around JSON."""
     text = text.strip()

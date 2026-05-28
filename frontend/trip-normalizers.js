@@ -25,6 +25,7 @@ function normalizeBackendTrip(response, profile, request) {
         return {
           t: segment.time,
           k: segment.title,
+          _pid: segment.place_ids?.[0] || "",
           highlight: simpleStopHighlight(place?.why_it_fits || segment.description),
           description: segment.description,
           note: segment.travel_note,
@@ -49,6 +50,22 @@ function normalizeBackendTrip(response, profile, request) {
         note: segments[0]?.description || "Check live hours and route timing before the day starts.",
       };
     });
+  // Merge real Google Maps place details into stops
+  const placeDetails = response.place_details || {};
+  if (Object.keys(placeDetails).length) {
+    for (const day of days) {
+      for (const stop of day.stops) {
+        const pd = placeDetails[stop._pid];
+        if (!pd) continue;
+        stop.rating = pd.rating;
+        stop.userRatingsTotal = pd.user_ratings_total;
+        stop.priceLevel = pd.price_level;
+        stop.openingHours = pd.opening_hours;
+        stop.website = pd.website;
+        stop.googleMapsUrl = pd.google_maps_url;
+      }
+    }
+  }
   const uniqueCities = [...new Set(days.map((day) => day.city).filter(Boolean))];
   const stopCount = days.reduce((total, day) => total + day.stops.length, 0);
   const reminders = itinerary.reminders?.length ? itinerary.reminders : [{ title: "Packing", items: ["Walking shoes", "Portable charger", "Weather layer"] }];

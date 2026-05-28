@@ -271,6 +271,48 @@ def _select_restaurant_candidates_v2(
     return all_hits[:limit]
 
 
+_RESTAURANT_TAG_LABELS: dict[str, str] = {
+    "ramen": "Ramen shop",
+    "sushi": "Sushi bar",
+    "izakaya": "Japanese izakaya",
+    "tempura": "Tempura restaurant",
+    "soba": "Soba noodle shop",
+    "udon": "Udon noodle shop",
+    "yakitori": "Yakitori grill",
+    "tonkatsu": "Tonkatsu restaurant",
+    "shabu": "Shabu-shabu hot pot",
+    "sukiyaki": "Sukiyaki restaurant",
+    "kaiseki": "Kaiseki fine dining",
+    "teppanyaki": "Teppanyaki grill",
+    "okonomiyaki": "Okonomiyaki grill",
+    "takoyaki": "Takoyaki stand",
+    "unagi": "Unagi eel restaurant",
+    "wagyu": "Wagyu beef restaurant",
+    "curry": "Japanese curry house",
+    "yakiniku": "Yakiniku BBQ",
+    "street food": "Street food spot",
+    "local": "Local restaurant",
+    "fusion": "Fusion cuisine",
+    "seafood": "Seafood restaurant",
+    "fine dining": "Fine dining",
+    "casual": "Casual dining",
+    "quick": "Quick bite",
+    "bakery": "Bakery & cafe",
+    "cafe": "Local cafe",
+    "dessert": "Dessert spot",
+    "breakfast": "Breakfast spot",
+    "local specialty": "Local specialty",
+    "popular restaurant": "Popular restaurant",
+    "breakfast spot": "Breakfast spot",
+    "lunch cafe": "Lunch cafe",
+}
+
+
+def _label_for_restaurant(restaurant: dict) -> str:
+    tag = (restaurant.get("tag") or "").lower()
+    return _RESTAURANT_TAG_LABELS.get(tag, "Local restaurant")
+
+
 def _enrich_restaurant_details(restaurants: list[dict]) -> None:
     """Fetch price + review_highlight via Place Details for restaurants that lack them."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -294,6 +336,11 @@ def _enrich_restaurant_details(restaurants: list[dict]) -> None:
                     restaurants[idx]["review_highlight"] = details["review_highlight"]
                 if details.get("rating") and not restaurants[idx].get("rating"):
                     restaurants[idx]["rating"] = details["rating"]
+
+        # Fallback: generate label from tag for restaurants without editorial summary
+        for restaurant in restaurants:
+            if not restaurant.get("review_highlight"):
+                restaurant["review_highlight"] = _label_for_restaurant(restaurant)
 
 
 def _extra_restaurant_places(prefetched: list[dict], existing_lower: set[str], slugger) -> list[MapPlace]:
@@ -376,21 +423,23 @@ def _limit_meal_segments_per_day(
                 if place and place.category == PlaceCategory.attraction:
                     existing_attraction_idents.add(restaurant_identity(place.name))
 
-    attraction_queue = [a for a in attractions if restaurant_identity(a["name"]) not in existing_attraction_idents]
-    attraction_idx = 0
-
-    def next_attraction() -> dict | None:
-        nonlocal attraction_idx
-        if not attraction_queue:
-            return None
-        attraction = attraction_queue[attraction_idx % len(attraction_queue)]
-        attraction_idx += 1
-        return attraction
+    # Group attractions by city so demoted meal slots get same-city replacements
+    by_city: dict[str, list[dict]] = {}
+    for a in attractions:
+        city_key = (a.get("city") or "").lower()
+        if city_key:
+            by_city.setdefault(city_key, []).append(a)
+    # Per-city index to cycle through same-city attractions without repeats
+    city_idx: dict[str, int] = {}
 
     def demote_to_attraction(segment: ItinerarySegment, day_area: str) -> ItinerarySegment:
         stripped_desc = re.split(r"\s*⭐", segment.description or "")[0].strip()
-        attraction = next_attraction()
-        if attraction:
+        city_key = (day_area or "").lower()
+        pool = by_city.get(city_key, [])
+        if pool:
+            idx = city_idx.get(city_key, 0)
+            attraction = pool[idx % len(pool)]
+            city_idx[city_key] = idx + 1
             pid = place_id_map.get(restaurant_identity(attraction["name"]), "")
             rating_str = f" ⭐ {attraction['rating']}" if attraction.get("rating") else ""
             new_desc = (stripped_desc or "A highly rated local attraction.") + rating_str
