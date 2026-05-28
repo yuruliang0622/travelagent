@@ -9,6 +9,10 @@ from app.models import (
     BookingChecklistResponse,
     DestinationPack,
     DestinationPackListResponse,
+    FlightSearchRequest,
+    FlightSearchResponse,
+    HotelSearchRequest,
+    HotelSearchResponse,
     Itinerary,
     MemorySearchRequest,
     MemorySearchResponse,
@@ -21,8 +25,11 @@ from app.models import (
     TripListResponse,
     UserProfile,
 )
-from app.services.planner import planner
-from app.services.repository import repository
+from app.agent.planner import planner
+from app.integrations.flights import search_flight_options
+from app.integrations.hotels import search_hotel_options
+from app.storage.repository import repository
+from app.integrations.mcp_bridge import mcp_bridge
 
 settings = get_settings()
 
@@ -41,22 +48,59 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+def _start_mcp_bridge() -> None:
+    if settings.enable_mongodb_mcp and settings.mongodb_uri:
+        ok = mcp_bridge.start(str(settings.mongodb_uri), settings.mongodb_database)
+        if ok:
+            import logging
+            logging.getLogger(__name__).info("MCP bridge started — %d tools available", len(mcp_bridge.available_tools))
+
+
+@app.on_event("shutdown")
+def _stop_mcp_bridge() -> None:
+    mcp_bridge.stop()
+
+
 @app.get("/health")
 def health() -> dict[str, object]:
+    mongodb_status = {
+        "configured": bool(settings.mongodb_uri),
+        "available": repository.mongodb_available,
+        "mode": repository.persistence_mode,
+        "database": settings.mongodb_database,
+        "collections": {
+            "trips": settings.mongodb_trips_collection,
+            "profiles": settings.mongodb_profiles_collection,
+            "destination_packs": settings.mongodb_destination_packs_collection,
+        },
+        "last_error": repository.mongodb_error or None,
+        "vector_search_available": repository.mongodb_available and bool(settings.google_cloud_project),
+    }
+
+    planner_mode = (
+        "gemini-function-calling"
+        if settings.enable_live_gemini and bool(settings.google_cloud_project)
+        else "mock"
+    )
+
     return {
         "status": "ok",
         "env": settings.app_env,
-        "planner": "mock",
+        "planner": planner_mode,
         "persistence": repository.persistence_mode,
         "google_cloud_project_configured": bool(settings.google_cloud_project),
         "google_api_key_configured": bool(settings.google_api_key),
-        "mongodb_configured": bool(settings.mongodb_uri),
-        "mongodb_available": repository.mongodb_available,
-        "mongodb_database": settings.mongodb_database,
+        "mongodb_configured": mongodb_status["configured"],
+        "mongodb_available": mongodb_status["available"],
+        "mongodb_database": mongodb_status["database"],
+        "mongodb": mongodb_status,
         "mongodb_mcp_configured": bool(settings.mongodb_mcp_server_url),
         "gemini_model": settings.gemini_model,
         "live_gemini_enabled": settings.enable_live_gemini,
         "live_maps_enabled": settings.enable_live_maps,
+        "live_flights_enabled": settings.enable_live_flights,
+        "serpapi_configured": bool(settings.serpapi_api_key),
     }
 
 
@@ -68,6 +112,16 @@ def plan_trip(request: PlanTripRequest) -> PlanTripResponse:
 @app.post("/api/agent/chat", response_model=AgentChatResponse)
 def chat_with_agent(request: AgentChatRequest) -> AgentChatResponse:
     return planner.chat(request)
+
+
+@app.post("/api/booking/flights/search", response_model=FlightSearchResponse)
+def search_booking_flights(request: FlightSearchRequest) -> FlightSearchResponse:
+    return search_flight_options(request)
+
+
+@app.post("/api/booking/hotels/search", response_model=HotelSearchResponse)
+def search_booking_hotels(request: HotelSearchRequest) -> HotelSearchResponse:
+    return search_hotel_options(request)
 
 
 @app.get("/api/trips", response_model=TripListResponse)
@@ -158,7 +212,10 @@ def update_booking_checklist_item(
 
 @app.post("/api/memory/search", response_model=MemorySearchResponse)
 def search_memory(request: MemorySearchRequest) -> MemorySearchResponse:
-    return MemorySearchResponse(results=repository.search_memory(request))
+    vector_results = repository.vector_search_memory(request.query, limit=request.limit)
+    if vector_results:
+        return MemorySearchResponse(mode="vector", results=vector_results)
+    return MemorySearchResponse(mode="lexical-mock", results=repository.search_memory(request))
 
 
 @app.get("/api/provider-limits", response_model=ProviderLimitResponse)

@@ -7,7 +7,7 @@ JAPAN_PACK = DestinationPack(
     id="japan",
     country="Japan",
     launch_status="active",
-    regions=["Tokyo", "Hakone", "Kyoto", "Osaka"],
+    regions=["Tokyo", "Hakone", "Nagoya", "Kyoto", "Osaka"],
     cultural_notes=[
         "Carry some cash for older shops and small restaurants.",
         "Cluster days by neighborhood to avoid cross-city backtracking.",
@@ -23,7 +23,51 @@ JAPAN_PACK = DestinationPack(
     ],
 )
 
-DESTINATION_PACKS = [JAPAN_PACK]
+THAILAND_PACK = DestinationPack(
+    id="thailand",
+    country="Thailand",
+    launch_status="active",
+    regions=["Bangkok", "Chiang Mai", "Phuket", "Krabi", "Koh Samui"],
+    cultural_notes=[
+        "Dress modestly at temples — shoulders and knees covered.",
+        "Bargain politely at markets; smile and stay friendly.",
+        "Tipping is appreciated but not required outside upscale spots.",
+    ],
+    transport_notes=[
+        "Use Grab for taxis in cities — avoid unmetered tuk-tuks for long trips.",
+        "Domestic flights (AirAsia, Nok) beat overnight buses for north-south travel.",
+        "BTS/MRT cover central Bangkok; pack walking shoes for the rest.",
+    ],
+    seasonal_notes=[
+        "Nov-Feb is cool and dry — peak season, book early.",
+        "Mar-May is hot; head to the islands for sea breeze.",
+        "Jun-Oct is monsoon season — cheaper but expect daily rain.",
+    ],
+)
+
+ITALY_PACK = DestinationPack(
+    id="italy",
+    country="Italy",
+    launch_status="active",
+    regions=["Rome", "Florence", "Venice", "Milan", "Amalfi Coast", "Cinque Terre"],
+    cultural_notes=[
+        "Coperto (cover charge) is standard at sit-down restaurants — not a tip.",
+        "Italians eat dinner late, 8-10pm; lunch is the main meal in many regions.",
+        "Cover shoulders and knees at major churches (Vatican, Duomo, etc.).",
+    ],
+    transport_notes=[
+        "Trenitalia and Italo run frequent fast trains between major cities.",
+        "Book Vatican, Uffizi, Colosseum tickets weeks ahead to skip lines.",
+        "Driving is best for Tuscany/Amalfi; avoid driving in city centers (ZTL fines).",
+    ],
+    seasonal_notes=[
+        "Apr-Jun and Sep-Oct are ideal — warm, manageable crowds.",
+        "Aug is crowded and hot; many locals close shops for vacation.",
+        "Nov-Mar is cooler, cheaper, and quieter — great for cities, less for coast.",
+    ],
+)
+
+DESTINATION_PACKS = [JAPAN_PACK, THAILAND_PACK, ITALY_PACK]
 
 PROVIDER_LIMITS = [
     ProviderLimit(
@@ -83,7 +127,7 @@ MOCK_ITINERARY = Itinerary(
     destination_pack_id="japan",
     summary={
         "hotel": "Nihonbashi hotel base, Hakone ryokan, Kyoto station hotel",
-        "flights": "Arrive HND 15:10 · Depart KIX 18:40",
+        "flights": "Round-trip Tokyo gateway · Arrive HND/NRT · Depart HND/NRT",
         "transit": "Suica IC card · Reserved Shinkansen",
         "budget": "JPY ¥155 ≈ USD $1\nLocal cash + card mix",
     },
@@ -160,17 +204,17 @@ MOCK_ITINERARY = Itinerary(
             "id": "overview",
             "day_number": 0,
             "date": "Overview",
-            "title": "Tokyo -> Hakone -> Kyoto -> Osaka",
+            "title": "Tokyo -> Hakone -> Kyoto -> Osaka -> Tokyo",
             "area": "Route",
             "color": "#2563eb",
             "place_ids": ["yanaka", "hakone", "fushimi", "namba"],
             "segments": [
                 {
                     "time": "Route",
-                    "title": "Start in Tokyo, slow down in Hakone, finish through Kansai",
-                    "description": "Avoid backtracking by ending near Kansai airport.",
+                    "title": "Start in Tokyo, slow down in Hakone, visit Kansai, return to Tokyo gateway",
+                    "description": "Default to same-airport Tokyo round-trip for stronger international flight options.",
                     "place_ids": ["yanaka", "hakone", "fushimi", "namba"],
-                    "travel_note": "No same-day airport backtrack.",
+                    "travel_note": "Return to Tokyo the prior afternoon or evening, not as an empty full commute day.",
                     "cost": "Balanced",
                 }
             ],
@@ -223,15 +267,16 @@ MOCK_ITINERARY = Itinerary(
         },
     ],
     reminders=[
-        {"title": "Daily carry", "items": ["Passport copy", "Small yen cash", "Portable charger"]},
-        {"title": "Comfort", "items": ["Walking shoes", "Light rain jacket", "Coin pouch"]},
-        {"title": "Japan basics", "items": ["IC card ready", "eSIM", "Trash bag"]},
+        {"title": "Docs", "items": ["Passport valid 6+ months", "Travel insurance", "Passport copy"]},
+        {"title": "Wear", "items": ["Walking shoes", "Light layers", "Rain jacket"]},
+        {"title": "Kit", "items": ["eSIM or pocket WiFi", "Portable charger", "Coin pouch", "Foldable day bag"]},
+        {"title": "Cash", "items": ["JPY cash for small shops", "IC card for transit", "Credit card for hotels"]},
     ],
     booking_checklist=[
         {
             "id": "flight-handoff",
             "type": "flight",
-            "title": "Track open-jaw flight: HND arrival, KIX departure",
+            "title": "Track Tokyo round-trip flight: HND/NRT arrival and departure",
             "provider": "Flight search handoff",
             "status": "needs-review",
             "deadline": "Before price alert expires",

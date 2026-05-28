@@ -90,12 +90,12 @@ const Ic = {
 // Categorize a stop description by keyword.
 function iconForStop(text) {
   const s = text.toLowerCase();
-  if (/(narita|haruka|express|train|shinkansen|romancecar|bullet|line|tokaido|jr )/.test(s)) return "Train";
   if (/(flight|airport|kix)/.test(s)) return "Plane";
-  if (/(temple|shrine|inari|teramachi|tenryu|kiyomizu|senso|castle)/.test(s)) return "Temple";
-  if (/(lunch|dinner|market|food|izakaya|ramen|coffee|crawl|yudofu)/.test(s)) return "Food";
+  if (/(narita|haruka|express|train|shinkansen|romancecar|bullet|line|tokaido|jr )/.test(s)) return "Train";
   if (/(check-in|hotel|ryokan|hyatt)/.test(s)) return "Hotel";
   if (/(onsen|kaiseki|soak)/.test(s)) return "Onsen";
+  if (/(temple|shrine|inari|teramachi|tenryu|kiyomizu|senso|castle)/.test(s)) return "Temple";
+  if (/(lunch|dinner|market|food|izakaya|ramen|coffee|crawl|yudofu)/.test(s)) return "Food";
   if (/(sunset|sunrise|golden|sky building|observation|view|ropeway|museum|maiko|crossing|grove|bamboo|grounds|planets|arcade|alley|park)/.test(s)) return "Camera";
   return "Walk";
 }

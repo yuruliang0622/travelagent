@@ -23,8 +23,11 @@ class Settings(BaseSettings):
     google_maps_api_key: str | None = None
     openweather_api_key: str | None = None
 
-    enable_live_gemini: bool = False
-    enable_live_maps: bool = False
+    serpapi_api_key: str | None = None
+
+    enable_live_gemini: bool = True
+    enable_live_maps: bool = True
+    enable_live_flights: bool = True
     enable_mongodb_mcp: bool = True
 
     model_config = SettingsConfigDict(

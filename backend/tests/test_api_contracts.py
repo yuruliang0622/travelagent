@@ -4,7 +4,7 @@ from pymongo.errors import ServerSelectionTimeoutError
 from app.config import Settings
 from app.main import app
 from app.models import BookingChecklistPatch, BookingStatus
-from app.services.repository import TripRepository
+from app.storage.repository import TripRepository
 
 
 client = TestClient(app)
@@ -16,13 +16,26 @@ def test_health_reports_mock_backend_status() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "ok"
-    assert payload["planner"] == "mock"
+    assert payload["planner"] in {"mock", "gemini-function-calling"}
     assert payload["persistence"] in {"memory", "mongodb-atlas"}
     assert "mongodb_available" in payload
     assert "gemini_model" in payload
+    assert payload["mongodb"]["mode"] == payload["persistence"]
+    assert payload["mongodb"]["configured"] == payload["mongodb_configured"]
+    assert payload["mongodb"]["available"] == payload["mongodb_available"]
+    assert set(payload["mongodb"]["collections"]) == {
+        "trips",
+        "profiles",
+        "destination_packs",
+    }
+    assert "mongodb_uri" not in payload
+    assert "uri" not in payload["mongodb"]
+    assert "password" not in str(payload).lower()
 
 
-def test_plan_trip_returns_mock_itinerary_for_prompt() -> None:
+def test_plan_trip_returns_mock_itinerary_for_prompt(monkeypatch) -> None:
+    monkeypatch.setattr("app.agent.planner.planner._try_agent_plan", lambda *args, **kwargs: None)
+
     response = client.post(
         "/api/agent/plan",
         json={"prompt": "Plan 7 days in Japan with food and culture."},
@@ -30,7 +43,7 @@ def test_plan_trip_returns_mock_itinerary_for_prompt() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["mode"] == "mock"
+    assert payload["mode"] in {"mock", "provider"}
     assert payload["prompt"] == "Plan 7 days in Japan with food and culture."
     assert payload["destination_pack"]["id"] == "japan"
     assert payload["itinerary"]["destination_pack_id"] == "japan"
@@ -38,7 +51,31 @@ def test_plan_trip_returns_mock_itinerary_for_prompt() -> None:
     assert payload["next_integrations"]
 
 
-def test_plan_trip_uses_profile_memory_consent() -> None:
+def test_plan_trip_accepts_global_destination_fields(monkeypatch) -> None:
+    monkeypatch.setattr("app.agent.planner.planner._try_agent_plan", lambda *args, **kwargs: None)
+
+    response = client.post(
+        "/api/agent/plan",
+        json={
+            "prompt": "Plan a 5 day Paris food and museum trip",
+            "destination": "Paris, France",
+            "days": 5,
+            "start_date": "2026-06-10",
+            "end_date": "2026-06-15",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["prompt"] == "Plan a 5 day Paris food and museum trip"
+    assert payload["mode"] == "mock"
+    assert payload["destination_pack"]["id"] == "japan"
+    assert payload["itinerary"]["destination_pack_id"] == "japan"
+
+
+def test_plan_trip_uses_profile_memory_consent(monkeypatch) -> None:
+    monkeypatch.setattr("app.agent.planner.planner._try_agent_plan", lambda *args, **kwargs: None)
+
     response = client.post(
         "/api/agent/plan",
         json={
@@ -95,6 +132,49 @@ def test_profiles_can_be_saved_and_read_back() -> None:
     assert payload["travelers"] == 2
 
 
+def test_flight_booking_search_returns_selectable_options() -> None:
+    response = client.post(
+        "/api/booking/flights/search",
+        json={
+            "origin": "San Francisco (SFO)",
+            "destination": "Tokyo, Japan",
+            "departure_date": "2026-10-12",
+            "return_date": "2026-10-18",
+            "travelers": 2,
+            "cabin": "Economy",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] in {"mock", "provider"}
+    assert len(payload["options"]) >= 2
+    assert payload["options"][0]["origin"] == "SFO"
+    assert payload["options"][0]["booking_url"].startswith("https://")
+
+
+def test_hotel_booking_search_returns_selectable_options() -> None:
+    response = client.post(
+        "/api/booking/hotels/search",
+        json={
+            "destination": "Tokyo, Japan",
+            "nights": 6,
+            "travelers": 2,
+            "budget": "Moderate",
+            "stay_type": "Boutique hotel",
+            "neighborhood": "City center — walkable",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] in {"mock", "provider"}
+    assert len(payload["options"]) >= 2
+    assert payload["options"][0]["total_estimate_usd"] >= payload["options"][0]["price_per_night_usd"]
+    assert payload["options"][0]["booking_url"].startswith("https://")
+    assert len(payload["options"][0]["highlights"]) <= 3
+
+
 def test_profile_validation_rejects_invalid_traveler_count() -> None:
     response = client.post(
         "/api/profiles",
@@ -148,7 +228,7 @@ def test_repository_falls_back_when_mongodb_connection_fails(monkeypatch) -> Non
             pass
 
     monkeypatch.setattr(
-        "app.services.repository.MongoClient",
+        "app.storage.repository.MongoClient",
         FailingMongoClient,
     )
 
@@ -157,6 +237,68 @@ def test_repository_falls_back_when_mongodb_connection_fails(monkeypatch) -> Non
     assert repo.persistence_mode == "memory"
     assert repo.mongodb_available is False
     assert repo.get_trip("japan-first-demo") is not None
+
+
+def test_repository_uses_mongodb_atlas_when_connection_works(monkeypatch) -> None:
+    stores: dict[str, dict[str, dict[str, object]]] = {}
+
+    class FakeAdmin:
+        def command(self, _: str) -> dict[str, int]:
+            return {"ok": 1}
+
+    class FakeCollection:
+        def __init__(self, name: str) -> None:
+            self.store = stores.setdefault(name, {})
+
+        def find_one(self, query: dict[str, str]) -> dict[str, object] | None:
+            doc = self.store.get(query["_id"])
+            return dict(doc) if doc is not None else None
+
+        def find(self, query: dict[str, object]) -> list[dict[str, object]]:
+            return [dict(doc) for doc in self.store.values()]
+
+        def replace_one(
+            self,
+            query: dict[str, str],
+            doc: dict[str, object],
+            upsert: bool = False,
+        ) -> None:
+            self.store[query["_id"]] = dict(doc)
+
+    class FakeDatabase:
+        def __getitem__(self, name: str) -> FakeCollection:
+            return FakeCollection(name)
+
+    class FakeMongoClient:
+        admin = FakeAdmin()
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __getitem__(self, name: str) -> FakeDatabase:
+            return FakeDatabase()
+
+    monkeypatch.setattr(
+        "app.storage.repository.MongoClient",
+        FakeMongoClient,
+    )
+
+    repo = TripRepository(settings=Settings(mongodb_uri="mongodb://working.test"))
+
+    assert repo.persistence_mode == "mongodb-atlas"
+    assert repo.mongodb_available is True
+    assert repo.mongodb_error == ""
+    assert repo.get_trip("japan-first-demo") is not None
+
+    profile = repo.save_profile(
+        repo.get_trip("japan-first-demo").profile.model_copy(
+            update={"id": "mongo-profile", "name": "Mongo Traveler"},
+        ),
+    )
+
+    assert profile.id == "mongo-profile"
+    assert stores["profiles"]["mongo-profile"]["name"] == "Mongo Traveler"
+    assert repo.get_profile("mongo-profile") is not None
 
 
 def test_repository_updates_booking_checklist_in_fallback_memory() -> None:

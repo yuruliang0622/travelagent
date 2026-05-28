@@ -7,12 +7,12 @@ Use the `frontend/` product UI, a FastAPI backend on Cloud Run, Gemini through V
 ## Runtime Shape
 
 - `frontend/`: canonical product UI direction for itinerary presentation, map layout, chat interaction, and visual style.
-- `web`: Next.js App Router UI for prompt input, itinerary review, map pins, booking checklist, and saved trip previews.
+- `web`: static React prototype served from `frontend/` with CDN React/Babel and no build step.
 - `api`: FastAPI service for planning, persistence, health checks, and travel validation contracts.
 - `agent`: Google Cloud Agent Builder / Gemini agent that plans, calls MongoDB MCP tools, and keeps the user in control.
 - `tools`: MongoDB MCP server for database, aggregation, and vector-search actions; app-level wrappers for Places and Routes validation.
 
-Future frontend work should migrate or wire the `frontend/` experience into the deployed Next.js app rather than extending the older dashboard design.
+Future frontend work should keep evolving `frontend/` directly until the product direction is stable. A later migration to Vite or Next.js should preserve this UI direction.
 
 ## Data
 
