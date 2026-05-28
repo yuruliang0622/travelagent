@@ -126,16 +126,6 @@ function googleMapsSearch(query, destination) {
 }
 
 function majorRegionForDay(day) {
-  const text = [
-    day?.city || "",
-    day?.title || "",
-    ...(day?.stops || []).flatMap((s) => [s?.k || "", s?.note || "", s?.description || ""]),
-  ].join(" ").toLowerCase();
-  if (/nara/.test(text)) return "Nara";
-  if (/osaka|namba|dotonbori|kansai|kix/.test(text)) return "Osaka";
-  if (/kyoto|gion|fushimi|arashiyama|kiyomizu|pontocho|uji/.test(text)) return "Kyoto";
-  if (/hakone|owakudani|ryokan|onsen/.test(text)) return "Hakone";
-  if (/tokyo|shinjuku|shibuya|asakusa|ginza|ueno|akihabara|haneda|narita/.test(text)) return "Tokyo";
   return day?.city || "Route";
 }
 
