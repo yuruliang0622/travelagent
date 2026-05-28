@@ -138,6 +138,16 @@ function PackingList({ trip }) {
 }
 
 function SummaryCards({ summary }) {
+  const [manualChecked, setManualChecked] = React.useState({});
+
+  function toggle(city) {
+    setManualChecked(prev => ({ ...prev, [city]: !prev[city] }));
+  }
+
+  function isChecked(city, booked) {
+    return !!manualChecked[city] || (booked || []).some(b => b.toLowerCase() === city.toLowerCase());
+  }
+
   return (
     <div style={{ maxWidth: 920, margin: "0 auto 32px", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
       {summary.map((s) => (
@@ -145,14 +155,58 @@ function SummaryCards({ summary }) {
           <div className="muted" style={{ fontSize: 11, fontFamily: "var(--mono)", letterSpacing: "0.08em", marginBottom: 12 }}>
             {s.label.toUpperCase()}
           </div>
-          <div style={{ display: "grid", gap: 10 }}>
-            {s.lines.map(([title, sub], i) => (
-              <div key={i}>
-                <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: "-0.01em", lineHeight: 1.3 }}>{title}</div>
-                <div className="muted" style={{ fontSize: 13, marginTop: 2, lineHeight: 1.35 }}>{sub}</div>
-              </div>
-            ))}
-          </div>
+          {s.checklist ? (
+            <div style={{ display: "grid", gap: 10 }}>
+              {s.checklist.map((city) => {
+                const checked = isChecked(city, s.booked);
+                return (
+                <div
+                  key={city}
+                  onClick={() => toggle(city)}
+                  style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer" }}
+                >
+                  <span style={{
+                    width: 18, height: 18, borderRadius: 4,
+                    border: "1.5px solid var(--rule)", flex: "0 0 18px",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    background: checked ? "var(--accent)" : "transparent",
+                    color: "#fff", fontSize: 11, fontWeight: 700,
+                    transition: "background 0.15s",
+                  }}>
+                    {checked ? "✓" : ""}
+                  </span>
+                  <span style={{
+                    fontSize: 14, lineHeight: 1.4,
+                    textDecoration: checked ? "line-through" : "none",
+                    color: checked ? "var(--ink-2)" : "var(--ink)",
+                  }}>{city}</span>
+                </div>
+                );
+              })}
+            </div>
+          ) : s.connections ? (
+            <div style={{ display: "grid", gap: 12 }}>
+              {s.connections.map((c, i) => (
+                <div key={i}>
+                  <div style={{ fontSize: 14, fontWeight: 600, letterSpacing: "-0.01em", lineHeight: 1.3 }}>
+                    {c.from} → {c.to}
+                  </div>
+                  {c.note && (
+                    <div className="muted" style={{ fontSize: 12, marginTop: 2, lineHeight: 1.35 }}>{c.note}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {s.lines.map(([title, sub], i) => (
+                <div key={i}>
+                  <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: "-0.01em", lineHeight: 1.3 }}>{title}</div>
+                  <div className="muted" style={{ fontSize: 13, marginTop: 2, lineHeight: 1.35 }}>{sub}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -491,11 +545,41 @@ function OverviewList({ trip, setActiveDay, userProfile, planningStatus }) {
   const flightSummary = selectedFlight
     ? selectedFlightSummaryLines(selectedFlight)
     : splitSummaryLines(summarySource.flights || "Prepare flight search · Verify airport timing");
+  const hotelCities = [...new Set(trip.days.map(d => majorRegionForDay(d)))];
+  const bookedCities = (userProfile?.selectedHotels || []).map(h => h.city || h.area || '').filter(Boolean);
+  // Build inter-city transit connections from day-to-day city changes
+  const connections = [];
+  let prevCity = null;
+  for (const day of trip.days) {
+    const city = majorRegionForDay(day);
+    if (prevCity && city !== prevCity) {
+      // Collect transit notes from this day's stops
+      const transitNotes = (day.stops || [])
+        .map(s => s.note)
+        .filter(n => n && /\b(train|station|Shinkansen|bus|line|transfer|express|limited|local|rapid|bullet|Hikari|Nozomi|Kodama|JR|Odakyu|Romancecar|Haruka|Narita|Keisei|Tokaido|Sanyo|subway|metro|monorail|tram|cable|ropeway|ferry)\b/i.test(n));
+      connections.push({ from: prevCity, to: city, note: transitNotes[0] || "" });
+    }
+    prevCity = city;
+  }
+  // Budget: sum flights + hotels in USD
+  const flightPrice = selectedFlight?.price_usd || 0;
+  const hotelTotal = (userProfile?.selectedHotels || []).reduce((sum, h) => {
+    return sum + (h.total_estimate_usd || (h.price_per_night_usd || 0) * (h.nights || 1) || 0);
+  }, 0);
+  let budgetLines;
+  if (flightPrice || hotelTotal) {
+    budgetLines = [];
+    if (flightPrice) budgetLines.push(["Flights", `$${flightPrice.toLocaleString()}`]);
+    if (hotelTotal) budgetLines.push(["Hotels", `$${hotelTotal.toLocaleString()}`]);
+    budgetLines.push(["Total", `~$${(flightPrice + hotelTotal).toLocaleString()} USD`]);
+  } else {
+    budgetLines = splitSummaryLines(summarySource.budget || "Use local currency · Verify exchange rate");
+  }
   const summary = [
-    { label: "Lodging", lines: splitSummaryLines(summarySource.hotel || "Stay near transit · Confirm hotel before booking") },
+    { label: "Lodging", checklist: hotelCities, booked: bookedCities },
     { label: "Flights", lines: flightSummary },
-    { label: "Transit", lines: splitSummaryLines(summarySource.transit || "Use local transit · Check route timing") },
-    { label: "Budget", lines: splitSummaryLines(summarySource.budget || "Use local currency · Verify exchange rate") },
+    { label: "Transit", connections },
+    { label: "Budget", lines: budgetLines },
   ];
 
   const cityColors = { Tokyo: "#FDB94E", Hakone: "#34C759", Kyoto: "#A26FE8", Nara: "#5B7C99", Osaka: "#FF6B6B", Kansai: "#5B7C99" };

@@ -294,12 +294,18 @@ def _resolve_place_details(
         if r.get("place_id"):
             name_to_pid[restaurant_identity(r["name"])] = r["place_id"]
 
-    # Match segments → real place_ids
+    # Match segments → real place_ids (exact first, then substring)
     real_pids: dict[str, str] = {}  # slug_key → real place_id
     for day in itinerary.days:
         for seg in day.segments:
             seg_norm = _norm(seg.title)
             pid = name_to_pid.get(seg_norm)
+            if not pid:
+                # Fuzzy: check if segment title contains a prefetched name or vice versa
+                for name_norm, candidate_pid in name_to_pid.items():
+                    if len(name_norm) > 4 and (name_norm in seg_norm or seg_norm in name_norm):
+                        pid = candidate_pid
+                        break
             if pid:
                 key = seg.place_ids[0] if seg.place_ids else seg_norm
                 real_pids[key] = pid
