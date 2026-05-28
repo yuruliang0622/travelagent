@@ -148,6 +148,10 @@ def build_chat_system_prompt(request: AgentChatRequest, past_trips_summary: str 
         "- Keep booking replies short. Prefer selectable options in the frontend; if you include provider URLs, include at most one review link per option and avoid long repeated link lists.\n"
         "- Always mention the budget tier and which area/neighborhood the hotels are in.\n"
         "- End with one actionable tip (e.g. 'Book flights 6-8 weeks out for best fares').\n\n"
+        "PLAN MODIFICATION:\n"
+        "- If the traveler asks to change the itinerary (add/remove cities, adjust which city is on which day, "
+        "change activities, adjust pace), call regenerate_plan with a clear summary of the requested changes.\n"
+        "- After calling regenerate_plan, the backend will rebuild the itinerary. Acknowledge the changes briefly.\n\n"
         f"ITINERARY CONTEXT:\n{request.trip_context}\n\n"
         f"RECENT CONVERSATION:\n{conversation}"
     )
@@ -340,13 +344,14 @@ def _selected_flight_line(selected_flight: dict | None) -> str:
     return "; ".join(parts) if parts else json.dumps(selected_flight, ensure_ascii=False)
 
 
-def build_skeleton_prompt(destination: str, days: int, preferences: str = "") -> str:
+def build_skeleton_prompt(destination: str, days: int, preferences: str = "", past_trips_summary: str = "") -> str:
     return (
         "You are a route planner. Output ONLY a JSON array of day-to-city assignments.\n"
         "ONLY output which city each day, do NOT write any attraction details.\n"
         f"Destination: {destination}\n"
         f"Days: {days}\n"
         + (f"Preferences: {preferences}\n" if preferences else "")
+        + (f"\n{past_trips_summary}\n" if past_trips_summary else "")
         + "Output format (NO other text):\n"
         '[{"day": 1, "city": "Tokyo"}, {"day": 2, "city": "Hakone"}, ...]\n'
         "Rules:\n"

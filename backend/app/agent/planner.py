@@ -1,5 +1,8 @@
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+logger = logging.getLogger(__name__)
 
 from app.config import get_settings
 from app.data.mock_data import JAPAN_PACK, itinerary_for_profile
@@ -26,6 +29,7 @@ from app.enrichment.attractions import prefetch_attractions, replace_unknown_att
 from app.enrichment.quality import improve_itinerary_quality
 from app.enrichment.restaurants import apply_real_restaurants, apply_validated_coords, prefetch_restaurants, restaurant_identity
 from app.integrations.maps import batch_get_place_details
+from app.integrations.mcp_bridge import mcp_bridge
 
 
 class TripPlanner:
@@ -37,6 +41,8 @@ class TripPlanner:
     def plan(self, request: PlanTripRequest) -> PlanTripResponse:
         from app.storage.repository import repository
 
+        self._last_plan_request = request
+
         profile = request.profile
         fallback_itinerary = itinerary_for_profile(profile)
         destination_pack = destination_pack_for_request(request)
@@ -46,12 +52,25 @@ class TripPlanner:
             result = self._try_agent_plan(request, fallback_itinerary, destination_pack, repository)
             if result is not None:
                 itinerary, tool_trace, place_details = result
-                # Persist to MongoDB Atlas and add to trace
+                # Persist via MCP first, fall back to direct Atlas connection
+                saved = False
                 try:
-                    repository.save_trip(itinerary)
-                    tool_trace.append("save_trip (MongoDB Atlas)")
+                    if mcp_bridge.is_initialized:
+                        mcp_bridge.upsert(
+                            collection=settings.mongodb_trips_collection,
+                            doc_id=itinerary.id,
+                            document=itinerary.model_dump(),
+                        )
+                        tool_trace.append("save_trip (MongoDB MCP)")
+                        saved = True
                 except Exception:
                     pass
+                if not saved:
+                    try:
+                        repository.save_trip(itinerary)
+                        tool_trace.append("save_trip (MongoDB Atlas)")
+                    except Exception:
+                        pass
                 return PlanTripResponse(
                     mode="gemini-function-calling",
                     prompt=prompt_for_request(request),
@@ -98,18 +117,56 @@ class TripPlanner:
         system_prompt = build_chat_system_prompt(request, past_trips_summary)
         user_message = request.question
 
+        # Capture regenerate_plan calls so we can re-run the pipeline after the loop
+        regen_requests: list[dict] = []
+
+        def dispatcher(name: str, args: dict) -> dict:
+            if name == "regenerate_plan":
+                regen_requests.append(dict(args))
+                return {"status": "captured", "changes": args.get("changes", "")}
+            return dispatch_chat_tool(name, args, repository)
+
         text, tool_trace = run_agent_loop(
             system_prompt=system_prompt,
             user_message=user_message,
             tools=CHAT_TOOLS,
-            tool_dispatcher=lambda name, args: dispatch_chat_tool(name, args, repository),
+            tool_dispatcher=dispatcher,
         )
+
+        # ── If the agent requested a plan regeneration, re-run the pipeline ──
+        new_itinerary: Itinerary | None = None
+        new_places: dict[str, dict] | None = None
+
+        if regen_requests and getattr(self, "_last_plan_request", None) is not None:
+            try:
+                changes = regen_requests[-1].get("changes", "")
+                orig = self._last_plan_request
+                modified = PlanTripRequest(
+                    prompt=orig.prompt + "\n\n[USER REQUESTED CHANGES]: " + changes,
+                    destination=orig.destination,
+                    days=orig.days,
+                    start_date=orig.start_date,
+                    end_date=orig.end_date,
+                    destination_pack_id=orig.destination_pack_id,
+                    profile=orig.profile,
+                    day_allocation=orig.day_allocation,
+                )
+                fallback_itinerary = itinerary_for_profile(orig.profile)
+                destination_pack = destination_pack_for_request(orig)
+                result = self._try_agent_plan(modified, fallback_itinerary, destination_pack, repository)
+                if result is not None:
+                    new_itinerary, regen_trace, new_places = result
+                    tool_trace.extend(regen_trace)
+            except Exception:
+                logger.exception("regenerate_plan pipeline failed")
 
         answer = normalize_chat_answer(text) or fallback
         return AgentChatResponse(
             mode="gemini" if text else "mock",
             answer=answer,
             tool_trace=tool_trace,
+            itinerary=new_itinerary,
+            place_details=new_places,
         )
 
     # ── Agent plan orchestration ───────────────────────────────────────────────
@@ -131,8 +188,23 @@ class TripPlanner:
         if attractions:
             tool_trace.append("prefetch_attractions (Google Maps)")
 
+        # ── Phase 1.5: Search past trips via MCP for personalization ───
+        past_trips_summary = ""
+        try:
+            settings = get_settings()
+            if mcp_bridge.is_initialized:
+                past_docs = mcp_bridge.find(
+                    collection=settings.mongodb_trips_collection,
+                    limit=3,
+                )
+                if past_docs:
+                    past_trips_summary = _past_trips_section(past_docs)
+                    tool_trace.append("search_past_trips (MongoDB MCP)")
+        except Exception:
+            pass
+
         # ── Phase 2: Generate skeleton (which city each day) ─────────────
-        skeleton = _build_skeleton(request, destination, days_count, tool_trace)
+        skeleton = _build_skeleton(request, destination, days_count, tool_trace, past_trips_summary)
         if not skeleton:
             return None
 
@@ -226,6 +298,7 @@ def _build_skeleton(
     destination: str,
     days_count: int,
     tool_trace: list[str],
+    past_trips_summary: str = "",
 ) -> list[dict]:
     """Build day-to-city skeleton from user prompt or Gemini."""
 
@@ -238,7 +311,7 @@ def _build_skeleton(
             return skeleton
 
     # Fall back to Gemini skeleton generation
-    skeleton_prompt = build_skeleton_prompt(destination, days_count, request.prompt)
+    skeleton_prompt = build_skeleton_prompt(destination, days_count, request.prompt, past_trips_summary)
     skeleton_text = generate_text(
         system_prompt="You are a route planner. Output only JSON. 只输出JSON。",
         user_message=skeleton_prompt,
