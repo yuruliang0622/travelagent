@@ -1,114 +1,57 @@
-# Handoff — Architecture Fix: Skeleton + Per-Day Pipeline
+# Handoff — 2026-05-28
 
-Date: 2026-05-28
+## Branch
 
-## Problem
+`fix/skeleton-per-day-pipeline` (ahead of `hackathon-demo`, ahead of `main`)
 
-Current trip quality is bad — cities don't match, "Explore Tokyo" text everywhere, restaurants/attractions from wrong cities. Root cause: one giant prompt with all 5 cities' attractions mixed together → Gemini confuses which attraction is in which city.
+## What was done today
 
-## What to do
+### Architecture: single giant prompt → skeleton + per-day pipeline
 
-### Step 1: Fix the `[]` bug (1 line)
+**Problem**: One prompt with all 5 cities' attractions mixed together → Gemini confused cities. "Explore Tokyo" everywhere. Restaurants/attractions from wrong cities.
 
-**File**: `backend/app/agent/planner.py`, line 165
+**Solution**: 5-step restructure in `backend/app/agent/planner.py`:
+1. **Prefetch** attractions for all cities (unchanged, Google Maps)
+2. **Skeleton** — determine which city each day (from user prompt or Gemini)
+3. **Per-day generation** — parallel Gemini calls, each only sees that city's attractions
+4. **Assemble** — merge per-day results into full itinerary
+5. **Enrichment** — restaurants + reviewers + place details
 
-Change:
-```python
-itinerary = apply_real_restaurants(itinerary, restaurants, slug, [])
-```
-To:
-```python
-itinerary = apply_real_restaurants(itinerary, restaurants, slug, attractions)
-```
+### Three-layer cross-city defense
 
-This stops "Explore Tokyo" from appearing everywhere.
+| Layer | File | What |
+|-------|------|------|
+| 1 | `planner.py` | Per-day prompt only includes same-city attractions |
+| 2 | `attractions.py:replace_unknown_attractions` | Only approves names in `city_approved` (same-city whitelist), not global `approved` |
+| 3 | `restaurants.py:_limit_meal_segments_per_day` | `demote_to_attraction` picks same-city only, not global queue |
 
-### Step 2: Add skeleton prompt
+### Descriptions: no more user reviews
 
-**File**: `backend/app/agent/prompts.py`
+- `maps.py`: removed `reviews` from API fields, only use `editorial_summary`
+- `attractions.py`: tag-based fallback labels ("Historic temple", "Scenic park")
+- `restaurants.py`: tag-based fallback labels ("Wagyu beef restaurant", "Ramen shop")
 
-Add `build_skeleton_prompt(destination, days, preferences)` — a minimal prompt that asks Gemini to output ONLY a city-per-day plan:
-```json
-[{"day": 1, "city": "Tokyo"}, {"day": 2, "city": "Hakone"}, ...]
-```
+### Quality reviewer wired in
 
-System prompt should say: "只输出每天在哪个城市，不要写任何景点细节。"
+- `improve_itinerary_quality` in `quality.py` was written but NEVER called
+- Now runs after `replace_unknown_attractions` in the pipeline
+- Dedupes, removes weak stops, injects iconic Japan places
 
-If the user already typed "D1 Tokyo, D2 Kyoto" in their prompt, skip Gemini and use `day_allocation_from_prompt()` from `request_helpers.py` directly.
+### Frontend fixes
 
-**File**: `backend/app/agent/parser.py`
+- `trip-normalizers.js:majorRegionForDay` — simplified from 15-line keyword guessing to `return day?.city || "Route"`
+- `direction-sections.jsx` — "LODGING" → "LODGING checklist", Transit section shows simple mode labels ("Shinkansen", "Train", "Bus") instead of verbose notes
+- Place details matching: exact → exact + substring fuzzy match
 
-Add `parse_skeleton(text: str) -> list[dict]` — parse the JSON array, return list of `{day_number, city}` dicts.
+## Known issues (not yet fixed)
 
-### Step 3: Add per-day prompts
+1. **Prefetch randomness** — `_select_attractions` uses `random.shuffle` + take 24. Some cities can get only 2 attractions. Fix: round-robin per city guaranteeing min 4.
 
-**File**: `backend/app/agent/prompts.py`
+2. **Nara not in `JAPAN_PACK.regions`** — gets 0 prefetched attractions. `_city_hint` defaults unknown cities to "tokyo" → wrong iconics injected. Fix: add Nara to regions + `JAPAN_ICONIC_STOPS`.
 
-Add two functions:
+3. **Chat agent can't modify itineraries** — `CHAT_TOOLS` only has search_flights/search_hotels/search_memory. No tool to regenerate the plan with new parameters. When user says "remove Nara, D6 → Osaka", agent responds with text but left panel doesn't update. Fix: add a `regenerate_plan` tool.
 
-`build_day_system_prompt(city: str) -> str`:
-```
-你是 {city} 的本地导游。你只推荐 {city} 范围内的景点和餐厅。
-禁止推荐其他城市的任何地点。
-严格使用 APPROVED ATTRACTIONS 列表中的名字。
-```
-
-`build_day_user_message(day_number, city, city_attractions, profile) -> str`:
-- Only includes `city_attractions` (~5-8 attractions, NOT all 24)
-- Includes day number, date, pace, budget, interests
-- Same JSON output format as current single-day output
-
-### Step 4: Restructure planner
-
-**File**: `backend/app/agent/planner.py` — `_try_agent_plan()`
-
-New flow:
-```
-1. prefetch_attractions (unchanged, still fetch all cities at once)
-2. Generate skeleton:
-   a. Try parse day_allocation from user prompt (day_allocation_from_prompt)
-   b. If empty, call Gemini with build_skeleton_prompt()
-   c. Parse result with parse_skeleton()
-3. For each day in skeleton:
-   a. Filter attractions: city_atts = [a for a in attractions if same city]
-   b. Call Gemini with build_day_system_prompt(city) + build_day_user_message(...)
-   c. Parse result into ItineraryDay
-4. Assemble all days into Itinerary
-5. Run existing restaurant enrichment (prefetch_restaurants → apply_real_restaurants → replace_unknown_attractions)
-6. Return
-```
-
-Optional: per-day Gemini calls can run in parallel with ThreadPoolExecutor (pattern already in `attractions.py:159`).
-
-### Step 5: Remove dangerous cross-city fallback
-
-**File**: `backend/app/enrichment/attractions.py`, line 223
-
-Change:
-```python
-fallback = city_attractions or prefetched
-```
-To keep the original Gemini title when no same-city matches:
-```python
-if not city_attractions:
-    updated_segments.append(seg)
-    continue
-```
-
-## Key principle
-
-Each day's Gemini call only sees attractions from that day's city. No cross-city data in context → impossible for Gemini to confuse which city an attraction belongs to.
-
-## Files to modify
-
-| File | What |
-|------|------|
-| `backend/app/agent/prompts.py` | Add 3 new prompt functions |
-| `backend/app/agent/parser.py` | Add parse_skeleton(), parse_day_json() |
-| `backend/app/agent/planner.py` | Restructure _try_agent_plan, fix []→attractions |
-| `backend/app/enrichment/attractions.py` | Remove cross-city fallback |
-
-## How to run & verify
+## How to run
 
 ```bash
 # Terminal 1: Backend
@@ -123,16 +66,25 @@ npm run dev
 # Open http://localhost:5174/
 ```
 
-Verify:
-1. Generate a 6-day Japan trip
-2. No "Explore Tokyo" / "Explore Kyoto" / "Explore {any city}" text in any segment
-3. Day city labels match actual attraction locations (D2 tagged Kyoto → Kyoto attractions)
-4. Restaurants are from the same city as the day (no Kyoto restaurant on Tokyo day)
+## Key files to know
 
-## Important notes
+| File | Purpose |
+|------|---------|
+| `backend/app/agent/planner.py` | Pipeline orchestration + `_resolve_place_details` |
+| `backend/app/agent/prompts.py` | All prompts: skeleton, per-day system, per-day user |
+| `backend/app/agent/parser.py` | `parse_skeleton`, `parse_day_allocation_string`, `itinerary_from_gemini` |
+| `backend/app/enrichment/attractions.py` | Prefetch + `replace_unknown_attractions` (city-aware reviewer) |
+| `backend/app/enrichment/restaurants.py` | Restaurant prefetch + `apply_real_restaurants` + `_limit_meal_segments_per_day` |
+| `backend/app/enrichment/quality.py` | `improve_itinerary_quality` (dedup, weak stops, iconic inject) |
+| `backend/app/integrations/maps.py` | Google Maps API: `get_place_details`, `search_text_multi` |
+| `backend/app/data/mock_data.py` | `JAPAN_PACK` (regions list), `DESTINATION_PACKS` |
+| `frontend/direction-sections.jsx` | Overview tab (Lodging/Flights/Transit/Budget cards) |
+| `frontend/trip-normalizers.js` | `majorRegionForDay`, `summarizeTripForChat`, `normalizeBackendTrip` |
+| `frontend/agent-chat.jsx` | Chat flow, booking flow |
+
+## Important
 
 - Project path has a space: always quote it in shell commands
-- `backend/.env` has all API keys — don't print or commit them
-- Only 1 git commit in this repo (`Initial Trip Agent MVP`) — commit your changes when done
-- The `city` field in prefetched attractions is set in `attractions.py:_select_attractions` line 138: `"city": city`
-- Use `.venv` for backend Python, `npx serve` for frontend
+- `backend/.env` has all API keys — don't print or commit
+- Use `.venv` for backend Python
+- Use `npm run dev` for frontend (runs cache bust first)

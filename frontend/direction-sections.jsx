@@ -153,7 +153,7 @@ function SummaryCards({ summary }) {
       {summary.map((s) => (
         <div key={s.label} className="card-lg" style={{ padding: 18 }}>
           <div className="muted" style={{ fontSize: 11, fontFamily: "var(--mono)", letterSpacing: "0.08em", marginBottom: 12 }}>
-            {s.label.toUpperCase()}
+            {s.displayLabel || s.label.toUpperCase()}
           </div>
           {s.checklist ? (
             <div style={{ display: "grid", gap: 10 }}>
@@ -191,9 +191,7 @@ function SummaryCards({ summary }) {
                   <div style={{ fontSize: 14, fontWeight: 600, letterSpacing: "-0.01em", lineHeight: 1.3 }}>
                     {c.from} → {c.to}
                   </div>
-                  {c.note && (
-                    <div className="muted" style={{ fontSize: 12, marginTop: 2, lineHeight: 1.35 }}>{c.note}</div>
-                  )}
+                  <div className="muted" style={{ fontSize: 12, marginTop: 2, lineHeight: 1.35 }}>{c.mode}</div>
                 </div>
               ))}
             </div>
@@ -211,6 +209,22 @@ function SummaryCards({ summary }) {
       ))}
     </div>
   );
+}
+
+function transitModeLabel(note, from, to) {
+  const text = note.toLowerCase();
+  if (/shinkansen|bullet|nozomi|hikari|kodama/i.test(text)) return "Shinkansen";
+  if (/limited\s*express|romancecar|haruka|narita\s*express/i.test(text)) return "Limited Express";
+  if (/express|rapid/i.test(text)) return "Express train";
+  if (/bus|highway\s*bus/i.test(text)) return "Bus";
+  if (/ropeway|cable\s*car|funicular/i.test(text)) return "Cable car / Ropeway";
+  if (/ferry|boat|ship/i.test(text)) return "Ferry";
+  if (/train|jr|odakyu|station|line|rail|keisei|tokaido|sanyo|subway|metro|monorail/i.test(text)) return "Train";
+  // Fallback: infer from city pair distance
+  const closePairs = [["tokyo", "hakone"], ["kyoto", "osaka"], ["kyoto", "nara"], ["osaka", "nara"]];
+  const pair = [from.toLowerCase(), to.toLowerCase()].sort();
+  if (closePairs.some(p => p[0] === pair[0] && p[1] === pair[1])) return "Local train";
+  return "Train";
 }
 
 function majorRegionForDay(day) {
@@ -576,9 +590,9 @@ function OverviewList({ trip, setActiveDay, userProfile, planningStatus }) {
     budgetLines = splitSummaryLines(summarySource.budget || "Use local currency · Verify exchange rate");
   }
   const summary = [
-    { label: "Lodging", checklist: hotelCities, booked: bookedCities },
+    { displayLabel: "LODGING checklist", label: "Lodging", checklist: hotelCities, booked: bookedCities },
     { label: "Flights", lines: flightSummary },
-    { label: "Transit", connections },
+    { label: "Transit", connections: connections.map(c => ({ ...c, mode: transitModeLabel(c.note || "", c.from, c.to) })) },
     { label: "Budget", lines: budgetLines },
   ];
 
