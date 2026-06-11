@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pymongo import MongoClient
@@ -6,7 +7,7 @@ from pymongo.database import Database
 from pymongo.errors import PyMongoError
 
 from app.config import Settings, get_settings
-from app.data.mock_data import DESTINATION_PACKS, MOCK_ITINERARY, PROVIDER_LIMITS
+from app.data.mock_data import DESTINATION_PACKS, PROVIDER_LIMITS
 from app.models import (
     BookingChecklistItem,
     BookingChecklistPatch,
@@ -17,6 +18,7 @@ from app.models import (
     MemorySearchResult,
     PlaceCategory,
     ProviderLimit,
+    SavedTrip,
     TripListItem,
     UserProfile,
 )
@@ -27,8 +29,10 @@ class TripRepository:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
-        self._trips: dict[str, Itinerary] = {MOCK_ITINERARY.id: MOCK_ITINERARY}
+        self._trips: dict[str, Itinerary] = {}
+        self._saved_trips: dict[str, SavedTrip] = {}
         self._profiles: dict[str, UserProfile] = {}
+        self._place_cache: dict[str, dict[str, Any]] = {}
         self._destination_packs: dict[str, DestinationPack] = {
             pack.id: pack for pack in DESTINATION_PACKS
         }
@@ -76,22 +80,62 @@ class TripRepository:
             for trip in self._trips.values()
         ]
 
-    def get_trip(self, trip_id: str) -> Itinerary | None:
+    def get_saved_trip(self, trip_id: str) -> SavedTrip | None:
         if self._mongo_available:
             doc = self._find_one(self._trips_collection(), trip_id)
             if doc is not None:
-                trip = self._model_from_doc(Itinerary, doc)
-                self._trips[trip.id] = trip
-                return trip
+                saved = self._saved_trip_from_doc(doc)
+                self._saved_trips[saved.itinerary.id] = saved
+                self._trips[saved.itinerary.id] = saved.itinerary
+                return saved
 
-        return self._trips.get(trip_id)
+        if trip_id in self._saved_trips:
+            return self._saved_trips[trip_id]
+        trip = self._trips.get(trip_id)
+        return SavedTrip(itinerary=trip) if trip is not None else None
 
-    def save_trip(self, trip: Itinerary) -> Itinerary:
+    def get_trip(self, trip_id: str) -> Itinerary | None:
+        saved = self.get_saved_trip(trip_id)
+        return saved.itinerary if saved is not None else None
+
+    def save_saved_trip(self, saved_trip: SavedTrip) -> SavedTrip:
+        trip = saved_trip.itinerary
         self._trips[trip.id] = trip
+        self._saved_trips[trip.id] = saved_trip
 
         if self._mongo_available:
-            self._replace_one(self._trips_collection(), trip.id, self._model_to_doc(trip))
+            self._replace_one(self._trips_collection(), trip.id, self._saved_trip_to_doc(saved_trip))
+        return saved_trip
+
+    def save_trip(self, trip: Itinerary) -> Itinerary:
+        self.save_saved_trip(SavedTrip(itinerary=trip))
         return trip
+
+    def delete_trip(self, trip_id: str) -> bool:
+        if trip_id in self._trips:
+            del self._trips[trip_id]
+        if trip_id in self._saved_trips:
+            del self._saved_trips[trip_id]
+
+        if self._mongo_available:
+            try:
+                self._trips_collection().delete_one({"_id": trip_id})
+            except PyMongoError:
+                pass
+        return True
+
+    def clear_all_trips(self) -> int:
+        count = max(len(self._trips), len(self._saved_trips))
+        self._trips.clear()
+        self._saved_trips.clear()
+
+        if self._mongo_available:
+            try:
+                result = self._trips_collection().delete_many({})
+                count = max(count, result.deleted_count)
+            except PyMongoError:
+                pass
+        return count
 
     def save_profile(self, profile: UserProfile) -> UserProfile:
         self._profiles[profile.id] = profile
@@ -345,6 +389,75 @@ class TripRepository:
     def list_provider_limits(self) -> list[ProviderLimit]:
         return PROVIDER_LIMITS
 
+    # ── Place cache: reuse Google Maps candidates instead of re-querying ───────
+
+    def get_cached_places(self, kind: str, city: str) -> list[dict[str, Any]] | None:
+        """Return cached candidates for (kind, city), or None on miss/expiry.
+
+        `kind` is "attraction" or "restaurant". A None result means "go fetch
+        from Google" — the caller then writes back via cache_places().
+        """
+        if not self._settings.enable_place_cache:
+            return None
+
+        key = self._place_cache_key(kind, city)
+        doc: dict[str, Any] | None = None
+        if self._mongo_available:
+            doc = self._find_one(self._place_cache_collection(), key)
+        if doc is None:
+            doc = self._place_cache.get(key)
+        if doc is None or self._place_cache_expired(doc):
+            return None
+        return doc.get("places")
+
+    def cache_places(self, kind: str, city: str, places: list[dict[str, Any]]) -> None:
+        """Store freshly fetched candidates for (kind, city). Upsert + timestamp."""
+        if not self._settings.enable_place_cache or not places:
+            return
+
+        key = self._place_cache_key(kind, city)
+        doc: dict[str, Any] = {
+            "_id": key,
+            "id": key,
+            "kind": kind,
+            "city": city.strip().lower(),
+            "places": places,
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._place_cache[key] = doc
+        if self._mongo_available:
+            self._replace_one(self._place_cache_collection(), key, doc)
+
+    def clear_place_cache(self) -> int:
+        """Drop all cached places (manual invalidation / force refresh)."""
+        count = len(self._place_cache)
+        self._place_cache.clear()
+        if self._mongo_available:
+            try:
+                result = self._place_cache_collection().delete_many({})
+                count = max(count, result.deleted_count)
+            except PyMongoError:
+                pass
+        return count
+
+    @staticmethod
+    def _place_cache_key(kind: str, city: str) -> str:
+        return f"{kind}:{city.strip().lower()}"
+
+    def _place_cache_expired(self, doc: dict[str, Any]) -> bool:
+        fetched = doc.get("fetched_at")
+        if not fetched:
+            return True
+        try:
+            stamp = datetime.fromisoformat(fetched)
+        except (ValueError, TypeError):
+            return True
+        age = datetime.now(timezone.utc) - stamp
+        return age > timedelta(days=self._settings.place_cache_ttl_days)
+
+    def _place_cache_collection(self) -> Collection[dict[str, Any]]:
+        return self._collection(self._settings.mongodb_place_cache_collection)
+
     def _connect_mongodb(self) -> None:
         try:
             # MongoDB is optional for local demos, so fail fast and keep serving memory data.
@@ -373,14 +486,27 @@ class TripRepository:
                     self._model_to_doc(pack),
                 )
 
-        if self._find_one(self._trips_collection(), MOCK_ITINERARY.id) is None:
-            if not self._mongo_available:
-                return
-            self._replace_one(
-                self._trips_collection(),
-                MOCK_ITINERARY.id,
-                self._model_to_doc(MOCK_ITINERARY),
-            )
+
+    def _saved_trip_from_doc(self, doc: dict[str, Any]) -> SavedTrip:
+        if isinstance(doc.get("itinerary"), dict):
+            itinerary_doc = doc["itinerary"]
+            place_details = doc.get("place_details") or {}
+        else:
+            itinerary_doc = doc
+            place_details = doc.get("place_details") or {}
+
+        return SavedTrip(
+            itinerary=self._model_from_doc(Itinerary, itinerary_doc),
+            place_details=place_details if isinstance(place_details, dict) else {},
+        )
+
+    def _saved_trip_to_doc(self, saved_trip: SavedTrip) -> dict[str, Any]:
+        itinerary_doc = self._model_to_doc(saved_trip.itinerary)
+        return {
+            **itinerary_doc,
+            "itinerary": itinerary_doc,
+            "place_details": saved_trip.place_details,
+        }
 
     def _trips_collection(self) -> Collection[dict[str, Any]]:
         return self._collection(self._settings.mongodb_trips_collection)
@@ -446,9 +572,10 @@ class TripRepository:
         if self._mongo_available:
             docs = self._find_many(self._trips_collection())
             if docs is not None:
-                trips = [self._model_from_doc(Itinerary, doc) for doc in docs]
-                self._trips.update({trip.id: trip for trip in trips})
-                return trips
+                saved_trips = [self._saved_trip_from_doc(doc) for doc in docs]
+                self._saved_trips.update({saved.itinerary.id: saved for saved in saved_trips})
+                self._trips.update({saved.itinerary.id: saved.itinerary for saved in saved_trips})
+                return [saved.itinerary for saved in saved_trips]
 
         return list(self._trips.values())
 

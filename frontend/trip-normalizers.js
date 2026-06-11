@@ -13,7 +13,11 @@ function normalizeStaticTrip(trip, fallback = false) {
 }
 
 function normalizeBackendTrip(response, profile, request) {
-  const itinerary = response.itinerary;
+  const savedResponse = response?.itinerary?.itinerary
+    ? { ...response.itinerary, destination_pack: response.destination_pack }
+    : response;
+  const itinerary = savedResponse.itinerary || savedResponse;
+  response = savedResponse.itinerary ? savedResponse : { ...savedResponse, itinerary };
   const placesById = new Map((itinerary.places || []).map((place) => [place.id, place]));
   const days = (itinerary.days || [])
     .filter((day) => day.day_number > 0)
@@ -25,6 +29,7 @@ function normalizeBackendTrip(response, profile, request) {
         return {
           t: segment.time,
           k: segment.title,
+          _pid: segment.place_ids?.[0] || "",
           highlight: simpleStopHighlight(place?.why_it_fits || segment.description),
           description: segment.description,
           note: segment.travel_note,
@@ -49,6 +54,22 @@ function normalizeBackendTrip(response, profile, request) {
         note: segments[0]?.description || "Check live hours and route timing before the day starts.",
       };
     });
+  // Merge real Google Maps place details into stops
+  const placeDetails = response.place_details || itinerary.place_details || {};
+  if (Object.keys(placeDetails).length) {
+    for (const day of days) {
+      for (const stop of day.stops) {
+        const pd = placeDetails[stop._pid];
+        if (!pd) continue;
+        stop.rating = pd.rating;
+        stop.userRatingsTotal = pd.user_ratings_total;
+        stop.priceLevel = pd.price_level;
+        stop.openingHours = pd.opening_hours;
+        stop.website = pd.website;
+        stop.googleMapsUrl = pd.google_maps_url;
+      }
+    }
+  }
   const uniqueCities = [...new Set(days.map((day) => day.city).filter(Boolean))];
   const stopCount = days.reduce((total, day) => total + day.stops.length, 0);
   const reminders = itinerary.reminders?.length ? itinerary.reminders : [{ title: "Packing", items: ["Walking shoes", "Portable charger", "Weather layer"] }];
@@ -109,16 +130,6 @@ function googleMapsSearch(query, destination) {
 }
 
 function majorRegionForDay(day) {
-  const text = [
-    day?.city || "",
-    day?.title || "",
-    ...(day?.stops || []).flatMap((s) => [s?.k || "", s?.note || "", s?.description || ""]),
-  ].join(" ").toLowerCase();
-  if (/nara/.test(text)) return "Nara";
-  if (/osaka|namba|dotonbori|kansai|kix/.test(text)) return "Osaka";
-  if (/kyoto|gion|fushimi|arashiyama|kiyomizu|pontocho|uji/.test(text)) return "Kyoto";
-  if (/hakone|owakudani|ryokan|onsen/.test(text)) return "Hakone";
-  if (/tokyo|shinjuku|shibuya|asakusa|ginza|ueno|akihabara|haneda|narita/.test(text)) return "Tokyo";
   return day?.city || "Route";
 }
 

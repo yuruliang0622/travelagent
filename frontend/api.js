@@ -101,6 +101,18 @@ async function saveTrip(itinerary) {
   return response.json();
 }
 
+async function listTrips() {
+  const response = await fetch(`${AGENT_API_BASE}/api/trips`);
+  if (!response.ok) throw new Error(`list trips returned ${response.status}`);
+  return response.json();
+}
+
+async function getTrip(tripId) {
+  const response = await fetch(`${AGENT_API_BASE}/api/trips/${encodeURIComponent(tripId)}`);
+  if (!response.ok) throw new Error(`get trip returned ${response.status}`);
+  return response.json();
+}
+
 window.TripAgentApi = {
   AGENT_API_BASE,
   backendOfflineMessage,
@@ -112,5 +124,7 @@ window.TripAgentApi = {
   searchFlights,
   searchHotels,
   saveTrip,
+  listTrips,
+  getTrip,
 };
 })();

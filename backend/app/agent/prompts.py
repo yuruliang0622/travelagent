@@ -147,7 +147,15 @@ def build_chat_system_prompt(request: AgentChatRequest, past_trips_summary: str 
         "- After getting results, present 2-3 specific options for flights and 2-3 for hotels.\n"
         "- Keep booking replies short. Prefer selectable options in the frontend; if you include provider URLs, include at most one review link per option and avoid long repeated link lists.\n"
         "- Always mention the budget tier and which area/neighborhood the hotels are in.\n"
-        "- End with one actionable tip (e.g. 'Book flights 6-8 weeks out for best fares').\n\n"
+        "- End with one actionable tip (e.g. 'Book flights 6-8 weeks out for best fares').\n"
+        "TRIP SAVING:\n"
+        "- The traveler does NOT need to ask you to save — every generated trip is automatically saved to MongoDB.\n"
+        "- If the traveler asks to save the trip or 'save this trip for me', DO NOT call any tool. Simply respond: "
+        "'Your trip is already saved! You can find it anytime by clicking \"Saved trips\" in the header.'\n\n"
+        "PLAN MODIFICATION:\n"
+        "- If the traveler asks to change the itinerary (add/remove cities, adjust which city is on which day, "
+        "change activities, adjust pace), call regenerate_plan with a clear summary of the requested changes.\n"
+        "- After calling regenerate_plan, the backend will rebuild the itinerary. Acknowledge the changes briefly.\n\n"
         f"ITINERARY CONTEXT:\n{request.trip_context}\n\n"
         f"RECENT CONVERSATION:\n{conversation}"
     )
@@ -338,6 +346,156 @@ def _selected_flight_line(selected_flight: dict | None) -> str:
     )
     parts = [f"{key}={selected_flight.get(key)}" for key in keys if selected_flight.get(key) not in (None, "")]
     return "; ".join(parts) if parts else json.dumps(selected_flight, ensure_ascii=False)
+
+
+# ── Japan inter-city transit lookup ────────────────────────────────────────────
+
+_JAPAN_TRANSIT: dict[tuple[str, str], tuple[str, str, str]] = {
+    ("Tokyo", "Kyoto"):     ("Shinkansen Nozomi", "2h 10m", "$100"),
+    ("Tokyo", "Osaka"):     ("Shinkansen Nozomi", "2h 30m", "$110"),
+    ("Tokyo", "Hakone"):    ("Romancecar / Shinkansen + local", "1h 30m", "$30"),
+    ("Tokyo", "Nikko"):     ("JR Tohoku + Tobu", "2h", "$35"),
+    ("Tokyo", "Nagoya"):    ("Shinkansen Nozomi", "1h 40m", "$80"),
+    ("Tokyo", "Hiroshima"): ("Shinkansen Nozomi", "4h", "$160"),
+    ("Tokyo", "Kanazawa"):  ("Shinkansen Kagayaki", "2h 30m", "$110"),
+    ("Kyoto", "Osaka"):     ("JR Special Rapid", "30m", "$5"),
+    ("Kyoto", "Nara"):      ("JR Nara Line", "45m", "$8"),
+    ("Kyoto", "Hakone"):    ("Shinkansen + local train", "2h 45m", "$95"),
+    ("Kyoto", "Hiroshima"): ("Shinkansen Nozomi", "1h 45m", "$85"),
+    ("Kyoto", "Kanazawa"):  ("JR Thunderbird", "2h 15m", "$60"),
+    ("Osaka", "Nara"):      ("JR Yamatoji Line", "45m", "$8"),
+    ("Osaka", "Hakone"):    ("Shinkansen + local train", "3h 15m", "$105"),
+    ("Osaka", "Hiroshima"): ("Shinkansen Nozomi", "1h 30m", "$75"),
+    ("Osaka", "Kobe"):      ("JR Special Rapid", "25m", "$4"),
+    ("Osaka", "Kanazawa"):  ("JR Thunderbird", "2h 45m", "$65"),
+    ("Hakone", "Kyoto"):    ("Local + Shinkansen", "2h 45m", "$95"),
+    ("Hakone", "Osaka"):    ("Local + Shinkansen", "3h 15m", "$105"),
+    ("Nara", "Osaka"):      ("JR Yamatoji Line", "45m", "$8"),
+    ("Nara", "Kyoto"):      ("JR Nara Line", "45m", "$8"),
+}
+
+
+def get_transit_info(from_city: str, to_city: str) -> dict | None:
+    """Return transit method/duration/cost between two cities, or None."""
+    key = (from_city, to_city)
+    if key in _JAPAN_TRANSIT:
+        method, duration, cost = _JAPAN_TRANSIT[key]
+        return {"from": from_city, "to": to_city, "method": method, "duration": duration, "cost": cost}
+    # Try reverse direction
+    rev = (to_city, from_city)
+    if rev in _JAPAN_TRANSIT:
+        method, duration, cost = _JAPAN_TRANSIT[rev]
+        return {"from": from_city, "to": to_city, "method": method, "duration": duration, "cost": cost}
+    return None
+
+
+def build_skeleton_prompt(destination: str, days: int, preferences: str = "", past_trips_summary: str = "") -> str:
+    return (
+        "You are a route planner. Output ONLY a JSON array of day-to-city assignments.\n"
+        "ONLY output which city each day, do NOT write any attraction details.\n"
+        f"Destination: {destination}\n"
+        f"Days: {days}\n"
+        + (f"Preferences: {preferences}\n" if preferences else "")
+        + (f"\n{past_trips_summary}\n" if past_trips_summary else "")
+        + "Output format (NO other text):\n"
+        '[{"day": 1, "city": "Tokyo"}, {"day": 2, "city": "Hakone"}, ...]\n'
+        "Rules:\n"
+        "- Every day must have exactly one city.\n"
+        "- Use the actual city name, not the country.\n"
+        "- Cities should form a logical geographic route.\n"
+        "- Output ONLY the JSON array, no markdown, no explanation."
+    )
+
+
+def build_day_system_prompt(city: str) -> str:
+    return (
+        f"You are a local guide for {city}. Only recommend attractions and restaurants within {city}.\n"
+        "Do NOT recommend places in any other city.\n"
+        "Use ONLY names from the APPROVED ATTRACTIONS list.\n"
+        "NEVER write 'Explore X', 'Wander X', or 'Free time' — use real attraction names.\n"
+        "ALL output text (titles, descriptions, segment names) MUST be in English.\n"
+        "Output a single day itinerary as JSON with the schema provided in the user message."
+    )
+
+
+def _arrival_after(duration_str: str) -> str:
+    """Estimate arrival time given a duration like '2h 30m'."""
+    import re
+    h = re.search(r"(\d+)h", duration_str)
+    m = re.search(r"(\d+)m", duration_str)
+    hours = int(h.group(1)) if h else 0
+    mins = int(m.group(1)) if m else 0
+    total_min = 8 * 60 + hours * 60 + mins
+    return f"{total_min // 60}:{total_min % 60:02d}"
+
+
+def build_day_user_message(
+    day_number: int,
+    city: str,
+    city_attractions: list[dict],
+    profile,
+    day_date: str = "",
+    transit_from: dict | None = None,
+) -> str:
+    import json as _json
+
+    interests = ", ".join(profile.interests) if profile.interests else "general sightseeing"
+    date_line = f"DATE: {day_date}" if day_date else f"DAY: {day_number}"
+
+    transit_section = ""
+    if transit_from:
+        t = transit_from
+        transit_section = f"""INTER-CITY TRANSIT (MANDATORY):
+You are traveling from {t['from']} to {t['to']} by {t['method']} ({t['duration']}, ~{t['cost']}).
+The FIRST segment of this day MUST be the transit journey — add this segment before all others:
+  time: "08:00"
+  title: "{t['method']}: {t['from']} -> {t['to']}"
+  description: "{t['duration']} journey from {t['from']}"
+  travel_note: "Book reserved seats in advance"
+  cost: "{t['cost']}"
+Count {t['duration']} as travel time — schedule the first attraction/activity AFTER arrival ({_arrival_after(t['duration'])}).
+"""
+
+    attraction_section = ""
+    if city_attractions:
+        attraction_section = "\nAPPROVED ATTRACTIONS (use ONLY these names for non-food segments):\n"
+        for a in city_attractions:
+            meta_parts = []
+            if a.get("neighborhood"):
+                meta_parts.append(a["neighborhood"])
+            if a.get("rating"):
+                meta_parts.append(f"{a['rating']} ⭐")
+            meta = "  |  ".join(meta_parts)
+            attraction_section += f"  • {a['name']}"
+            if meta:
+                attraction_section += f"  |  {meta}"
+            attraction_section += "\n"
+        attraction_section += "HARD RULE: Use names from this list. No invented attraction names.\n"
+
+    return f"""
+CITY: {city}
+{date_line}
+PACE: {profile.pace} | BUDGET: {profile.budget} | TRAVELERS: {profile.travelers}
+INTERESTS: {interests}
+{transit_section}
+{attraction_section}
+FOOD PREFERENCES: {", ".join(profile.food_preferences) if profile.food_preferences else "no restrictions"}
+
+Output a single day JSON with this schema:
+{{
+  "title": "day title for Day {day_number} in {city}",
+  "area": "{city}",
+  "date": "Day {day_number}",
+  "segments": [
+    {{"time": "09:00", "title": "attraction name from approved list", "description": "short context", "place_id": "", "travel_note": "", "cost": "$"}}
+  ],
+  "places": [
+    {{"id": "short-id", "name": "place name", "category": "attraction|restaurant", "neighborhood": "area", "lat": 0, "lng": 0, "cost": "$", "duration": "~1.5 hr", "why_it_fits": "why this fits", "google_maps_query": "place plus {city}"}}
+  ]
+}}
+Schedule: at least 3 attraction segments, at most 2 meal segments (lunch 12:00-13:30, dinner 18:30-20:30).
+Output ONLY raw JSON, no markdown, no code fences.
+""".strip()
 
 
 def _past_trips_section(trips: list) -> str:

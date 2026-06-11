@@ -1,6 +1,6 @@
-# Trip Agent
+# Reiko — Your Personal Travel Curator
 
-Trip Agent is a clickable MVP for a global AI travel planner launching first with a Japan destination pack. The current milestone is a polished itinerary dashboard plus a Rapid Agent hackathon-ready backend skeleton for Gemini, Google Cloud Agent Builder, MongoDB Atlas, MongoDB MCP, and Google Maps.
+Reiko is an AI travel agent that plans complete trips in one conversation launching first with a Japan destination pack. The current milestone is a polished itinerary dashboard plus a Rapid Agent hackathon-ready backend skeleton for Gemini, Google Cloud Agent Builder, MongoDB Atlas, MongoDB MCP, and Google Maps.
 
 ## Current Build
 

@@ -260,28 +260,42 @@ function citiesForDay(day, knownCities) {
   return found;
 }
 
+function cityFromDayArea(area, knownCities) {
+  const cleanArea = String(area || "").trim();
+  if (!cleanArea) return "";
+
+  const exact = knownCities.find((city) => city.toLowerCase() === cleanArea.toLowerCase());
+  if (exact) return exact;
+
+  const contained = knownCities.find((city) => {
+    const pattern = new RegExp(`\\b${city.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+    return pattern.test(cleanArea);
+  });
+  if (contained) return contained;
+
+  // Avoid country-level hotel searches when the itinerary failed to provide a city.
+  if (/^(japan|route|global trip)$/i.test(cleanArea)) return "";
+  return cleanArea;
+}
+
 // Return city-by-city breakdown for hotel search fan-out.
-// Returns [{ city: "Tokyo", nights: 3 }, ...] ordered by night count desc.
-// Falls back to [{ city: destination, nights: total }] if no cities detected.
+// Hotel cities come from the final itinerary day.area only. Do not scan
+// segment titles or travel notes, because transit text can mention pass-through
+// cities such as Nagoya that are not overnight stays.
 function tripCityBreakdown(itinerary, fallbackDestination) {
   if (!itinerary?.days) return fallbackDestination ? [{ city: fallbackDestination, nights: 1 }] : [];
-  const knownCities = KNOWN_CITIES;
   const days = (itinerary.days || []).filter((d) => d.day_number > 0);
   const counts = new Map();
   for (const day of days) {
-    const cities = citiesForDay(day, knownCities);
-    if (cities.length === 0) continue;
-    // Credit the LAST city of the day (where you sleep)
-    const sleepCity = cities[cities.length - 1];
+    const sleepCity = cityFromDayArea(day.area, KNOWN_CITIES);
+    if (!sleepCity) continue;
     counts.set(sleepCity, (counts.get(sleepCity) || 0) + 1);
   }
   if (counts.size === 0) {
     const total = days.length || 1;
     return fallbackDestination ? [{ city: fallbackDestination, nights: total }] : [];
   }
-  return Array.from(counts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .map(([city, nights]) => ({ city, nights }));
+  return Array.from(counts.entries()).map(([city, nights]) => ({ city, nights }));
 }
 
 window.TripAgentFlow = {

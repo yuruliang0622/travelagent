@@ -97,7 +97,7 @@ def _serpapi_option(item: dict, index: int, request: FlightSearchRequest, origin
 
 def _mock_flight_options(request: FlightSearchRequest) -> FlightSearchResponse:
     origin = _clean_airport(request.origin) or "SFO"
-    destination = request.destination.strip() or "destination"
+    destination = _demo_destination(request.destination.strip() or "destination")
     cabin = request.cabin or "Economy"
     search_url = _flight_search_url(origin, destination, request.departure_date, request.return_date)
     premium = _cabin_multiplier(cabin)
@@ -111,8 +111,8 @@ def _mock_flight_options(request: FlightSearchRequest) -> FlightSearchResponse:
             origin=origin,
             destination=destination,
             depart_time=_date_label(request.departure_date, "10:45"),
-            arrive_time="Next day 15:10",
-            duration="13h 25m",
+            arrive_time=_date_label(_next_day(request.departure_date), "15:10"),
+            duration="11h 25m",
             stops=0,
             cabin=cabin,
             price_usd=round(base * premium),
@@ -126,7 +126,7 @@ def _mock_flight_options(request: FlightSearchRequest) -> FlightSearchResponse:
             origin=origin,
             destination=destination,
             depart_time=_date_label(request.departure_date, "07:30"),
-            arrive_time="Next day 16:40",
+            arrive_time=_date_label(_next_day(request.departure_date), "16:40"),
             duration="16h 10m",
             stops=1,
             cabin=cabin,
@@ -141,8 +141,8 @@ def _mock_flight_options(request: FlightSearchRequest) -> FlightSearchResponse:
             origin=origin,
             destination=destination,
             depart_time=_date_label(request.departure_date, "12:20"),
-            arrive_time="Next day 17:35",
-            duration="14h 05m",
+            arrive_time=_date_label(_next_day(request.departure_date), "17:35"),
+            duration="11h 15m",
             stops=0,
             cabin=cabin,
             price_usd=round(base * 1.08 * premium),
@@ -156,12 +156,30 @@ def _mock_flight_options(request: FlightSearchRequest) -> FlightSearchResponse:
         provider="mock-flight-provider",
         summary=(
             f"I found {len(options)} selectable flight-style options from {origin} to {destination}. "
-            "Prices are demo estimates until a live provider key is connected."
+            "Curated demo fares are estimates until a live provider key is connected."
         ),
         options=options,
         next_step="Pick one option here, then verify live fare and complete purchase on the provider site.",
     )
 
+
+
+def _demo_destination(destination: str) -> str:
+    text = str(destination or "").strip()
+    if "japan" in text.lower():
+        return "Tokyo (HND)"
+    return text
+
+
+def _next_day(date_value: str) -> str:
+    if not date_value:
+        return "Next day"
+    try:
+        from datetime import date, timedelta
+
+        return (date.fromisoformat(date_value) + timedelta(days=1)).isoformat()
+    except ValueError:
+        return "Next day"
 
 def _clean_airport(value: str) -> str:
     text = str(value or "").strip()

@@ -31,6 +31,10 @@ def search_hotel_options(request: HotelSearchRequest) -> HotelSearchResponse:
     if serpapi_matches:
         return _serpapi_only_response(request, destination, area, nightly, nights, serpapi_matches)
 
+    curated = _curated_japan_hotels(destination, area, nightly, nights, request.check_in, request.check_out)
+    if curated:
+        return curated
+
     return _mock_hotels(destination, area, nightly, nights, request.check_in, request.check_out)
 
 
@@ -350,6 +354,68 @@ def _price_modifier_from_details(details: dict, hit: dict, budget: str) -> float
     # Tiny jitter so cards differ visibly
     return base + random.uniform(-0.05, 0.05)
 
+
+
+def _curated_japan_hotels(destination: str, area: str, nightly: int, nights: int, check_in: str, check_out: str) -> HotelSearchResponse | None:
+    city = _known_japan_city(area) or _known_japan_city(destination)
+    curated = {
+        "Tokyo": [
+            ("Hotel Metropolitan Tokyo Marunouchi", "Marunouchi / Tokyo Station", 4.4, 1700, 240, ["Reliable full-service hotel", "Excellent Tokyo Station logistics", "Good arrival or final-night base"]),
+            ("Nohga Hotel Ueno Tokyo", "Ueno", 4.5, 1200, 185, ["Design-forward neighborhood stay", "Easy transit across Tokyo", "Strong value for first-time visitors"]),
+        ],
+        "Hakone": [
+            ("Hakone Yutowa", "Gora", 4.3, 900, 260, ["Modern onsen hotel", "Good value in Gora", "Easy one-night Hakone base"]),
+            ("Hotel Okada", "Hakone-Yumoto", 4.1, 2100, 230, ["Classic onsen stay", "Convenient Hakone-Yumoto access", "Ryokan-style dinner options"]),
+        ],
+        "Kyoto": [
+            ("Hotel Granvia Kyoto", "Kyoto Station", 4.4, 2600, 235, ["Best Shinkansen logistics", "Reliable full-service base", "Easy for Kyoto and Nara day trips"]),
+            ("Nohga Hotel Kiyomizu Kyoto", "Kiyomizu", 4.5, 950, 190, ["Design-forward local feel", "Walkable temple district", "Good moderate Kyoto pick"]),
+        ],
+        "Osaka": [
+            ("Hotel The Flag Shinsaibashi", "Shinsaibashi", 4.6, 1800, 170, ["Strong value near Shinsaibashi", "Modern boutique feel", "Easy food-night base"]),
+            ("Cross Hotel Osaka", "Namba / Dotonbori", 4.4, 2200, 210, ["Great Dotonbori access", "Reliable city hotel", "Easy late-night food option"]),
+        ],
+    }
+    hotels = curated.get(city)
+    if not hotels:
+        return None
+
+    options = []
+    for name, neighborhood, rating, reviews, demo_rate, highlights in hotels:
+        rate = max(50, round(demo_rate or nightly))
+        options.append(
+            HotelOption(
+                id=_slug(name),
+                name=name,
+                area=neighborhood,
+                rating=rating,
+                review_count=reviews,
+                price_per_night_usd=rate,
+                total_estimate_usd=rate * nights,
+                highlights=highlights,
+                booking_url=_google_hotels_url(name, city, check_in, check_out),
+                source="curated-japan-demo",
+            )
+        )
+
+    return HotelSearchResponse(
+        mode="mock",
+        provider="curated-japan-demo-hotels",
+        summary=(
+            f"Found 2 curated respected hotel options for {city}. "
+            "Rates are demo estimates; open Google Hotels to verify live availability."
+        ),
+        options=options,
+        next_step="Pick one hotel per overnight city, then verify live availability and cancellation rules.",
+    )
+
+
+def _known_japan_city(value: str) -> str:
+    text = str(value or "").lower()
+    for city in ("Tokyo", "Hakone", "Kyoto", "Osaka"):
+        if city.lower() in text:
+            return city
+    return ""
 
 def _mock_hotels(destination: str, area: str, nightly: int, nights: int, check_in: str, check_out: str) -> HotelSearchResponse:
     search_url = _hotel_search_url(area, check_in, check_out)
