@@ -10,7 +10,7 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-MAX_TOOL_ROUNDS = 1
+MAX_TOOL_ROUNDS = 3
 
 
 def run_agent_loop(
@@ -73,6 +73,8 @@ def run_agent_loop(
     except (genai_errors.APIError, google_auth_errors.GoogleAuthError, OSError, ValueError):
         logger.exception("Gemini agent loop failed")
         return "", tool_trace
+
+    return "", tool_trace
 
 
 def generate_text(system_prompt: str, user_message: str, temperature: float = 0.7, model: str | None = None) -> str:

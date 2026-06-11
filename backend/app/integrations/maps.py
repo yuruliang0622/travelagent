@@ -75,6 +75,7 @@ def get_place_details(place_id: str) -> dict:
                     "place_id": place_id,
                     "fields": "name,rating,user_ratings_total,price_level,editorial_summary",
                     "key": settings.google_maps_api_key,
+                    "language": "en",
                 },
             )
             resp.raise_for_status()
@@ -107,7 +108,7 @@ def _search_one(name: str, api_key: str) -> dict:
         with httpx.Client(timeout=_TIMEOUT_SECONDS) as client:
             resp = client.get(
                 _PLACES_TEXT_SEARCH_URL,
-                params={"query": query, "key": api_key},
+                params={"query": query, "key": api_key, "language": "en"},
             )
             resp.raise_for_status()
             data = resp.json()
@@ -138,7 +139,7 @@ def search_text_multi(query: str, limit: int = 5) -> list[dict]:
         with httpx.Client(timeout=_TIMEOUT_SECONDS) as client:
             resp = client.get(
                 _PLACES_TEXT_SEARCH_URL,
-                params={"query": query, "key": settings.google_maps_api_key},
+                params={"query": query, "key": settings.google_maps_api_key, "language": "en"},
             )
             resp.raise_for_status()
             data = resp.json()
@@ -176,6 +177,7 @@ def get_place_details_full(place_id: str) -> dict:
                     "place_id": place_id,
                     "fields": "name,formatted_phone_number,opening_hours,website,photos,url,editorial_summary,price_level,rating,user_ratings_total",
                     "key": settings.google_maps_api_key,
+                    "language": "en",
                 },
             )
             resp.raise_for_status()

@@ -21,6 +21,7 @@ from app.models import (
     PlacesResponse,
     PlaceCategory,
     ProviderLimitResponse,
+    SavedTrip,
     SaveTripResponse,
     TripListResponse,
     UserProfile,
@@ -34,14 +35,18 @@ from app.integrations.mcp_bridge import mcp_bridge
 settings = get_settings()
 
 app = FastAPI(
-    title="Trip Agent API",
+    title="Reiko API",
     version="0.1.0",
-    description="Backend foundation for Trip Agent: planning, profiles, saved trips, Vertex AI Gemini, MongoDB Atlas, and MongoDB MCP.",
+    description="Reiko — Your Personal Travel Curator. Planning, profiles, saved trips, Vertex AI Gemini, MongoDB Atlas, and MongoDB MCP.",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_origin],
+    allow_origins=[
+        settings.frontend_origin,
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -145,20 +150,22 @@ def get_destination_pack(pack_id: str) -> DestinationPack:
     return pack
 
 
-@app.get("/api/trips/{trip_id}", response_model=Itinerary)
-def get_trip(trip_id: str) -> Itinerary:
-    trip = repository.get_trip(trip_id)
-    if trip is None:
+@app.get("/api/trips/{trip_id}", response_model=SavedTrip)
+def get_trip(trip_id: str) -> SavedTrip:
+    saved_trip = repository.get_saved_trip(trip_id)
+    if saved_trip is None:
         raise HTTPException(status_code=404, detail="Trip not found")
-    return trip
+    return saved_trip
 
 
 @app.post("/api/trips", response_model=SaveTripResponse, status_code=201)
-def save_trip(trip: Itinerary) -> SaveTripResponse:
-    saved_trip = repository.save_trip(trip)
+def save_trip(payload: SavedTrip | Itinerary) -> SaveTripResponse:
+    saved_trip = payload if isinstance(payload, SavedTrip) else SavedTrip(itinerary=payload)
+    saved_trip = repository.save_saved_trip(saved_trip)
     return SaveTripResponse(
         saved=True,
-        trip=saved_trip,
+        trip=saved_trip.itinerary,
+        place_details=saved_trip.place_details,
         persistence=repository.persistence_mode,
     )
 

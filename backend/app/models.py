@@ -83,6 +83,7 @@ class MapPlace(BaseModel):
     source: str
     why_it_fits: str
     google_maps_url: str
+    google_place_id: str = ""
 
 
 class ItinerarySegment(BaseModel):
@@ -187,6 +188,8 @@ class AgentChatResponse(BaseModel):
     mode: Literal["mock", "gemini"] = "mock"
     answer: str
     tool_trace: list[str] = Field(default_factory=list)
+    itinerary: Itinerary | None = None
+    place_details: dict[str, dict] | None = None
 
 
 class TripListItem(BaseModel):
@@ -194,6 +197,11 @@ class TripListItem(BaseModel):
     title: str
     dates: str
     destination_pack_id: str
+
+
+class SavedTrip(BaseModel):
+    itinerary: Itinerary
+    place_details: dict[str, dict] = Field(default_factory=dict)
 
 
 class TripListResponse(BaseModel):
@@ -204,6 +212,7 @@ class TripListResponse(BaseModel):
 class SaveTripResponse(BaseModel):
     saved: bool
     trip: Itinerary
+    place_details: dict[str, dict] = Field(default_factory=dict)
     persistence: str
 
 

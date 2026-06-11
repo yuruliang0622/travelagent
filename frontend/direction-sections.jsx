@@ -220,11 +220,29 @@ function transitModeLabel(note, from, to) {
   if (/ropeway|cable\s*car|funicular/i.test(text)) return "Cable car / Ropeway";
   if (/ferry|boat|ship/i.test(text)) return "Ferry";
   if (/train|jr|odakyu|station|line|rail|keisei|tokaido|sanyo|subway|metro|monorail/i.test(text)) return "Train";
-  // Fallback: infer from city pair distance
+
+  // Known Japan routes with real transit info
+  const routeKey = [from.toLowerCase(), to.toLowerCase()].sort().join("|");
+  const knownRoutes = {
+    "hakone|tokyo": "Romancecar / Odakyu Line · ~1.5h",
+    "kyoto|tokyo": "Tokaido Shinkansen · ~2h",
+    "osaka|tokyo": "Tokaido Shinkansen · ~2.5h",
+    "kyoto|osaka": "JR Kyoto Line · ~30m",
+    "nara|osaka": "JR Yamatoji Line · ~45m",
+    "kyoto|nara": "JR Nara Line · ~45m",
+    "hakone|kyoto": "Shinkansen (via Odawara) · ~2h",
+  };
+  if (knownRoutes[routeKey]) return knownRoutes[routeKey];
+
+  // Fallback: infer from distance
   const closePairs = [["tokyo", "hakone"], ["kyoto", "osaka"], ["kyoto", "nara"], ["osaka", "nara"]];
-  const pair = [from.toLowerCase(), to.toLowerCase()].sort();
-  if (closePairs.some(p => p[0] === pair[0] && p[1] === pair[1])) return "Local train";
-  return "Train";
+  for (const p of closePairs) {
+    const sortedPair = p.map(c => c.toLowerCase()).sort();
+    if (sortedPair[0] === [from.toLowerCase(), to.toLowerCase()].sort()[0] && sortedPair[1] === [from.toLowerCase(), to.toLowerCase()].sort()[1]) {
+      return "Local train · ~1h";
+    }
+  }
+  return "Train / Shinkansen";
 }
 
 function majorRegionForDay(day) {
@@ -375,11 +393,9 @@ function LoginSheet({ userProfile, planningStatus, onSave, onClear, onClose }) {
       aria-label="User profile"
       style={{
         position: "fixed",
-        top: 0,
-        left: 0,
-        /* Stop 380px from the right so the AgentChat panel stays visible */
-        right: 380,
-        bottom: 0,
+        inset: 0,
+        width: "100vw",
+        minHeight: "100dvh",
         zIndex: 2000,
         background: "rgba(0,0,0,0.26)",
         display: "flex",

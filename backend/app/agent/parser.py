@@ -34,8 +34,10 @@ def itinerary_from_gemini(
         if not days:
             return None
 
+        import time
+        trip_id = f"{destination_pack.id}-{int(time.time())}"
         return Itinerary(
-            id=f"{destination_pack.id}-gemini-demo",
+            id=trip_id,
             title=_string(generated.get("title"), f"{destination} Trip"),
             subtitle=_string(
                 generated.get("subtitle"),
@@ -156,6 +158,7 @@ def _places_from_generated(generated: dict, destination: str) -> list[MapPlace]:
                 source="gemini-function-calling",
                 why_it_fits=_string(raw.get("why_it_fits"), "Fits the requested trip style."),
                 google_maps_url=f"https://www.google.com/maps/search/?api=1&query={query.replace(' ', '+')}",
+                google_place_id=_string(raw.get("google_place_id") or raw.get("place_id"), ""),
             ),
         )
     return places

@@ -135,12 +135,58 @@ const {
 const { isLivePlanMode } = window.TripAgentFlow;
 function DirectionB() {
   const [activeDay, setActiveDay] = React.useState(0);
-  const [trip, setTrip] = React.useState(() => normalizeStaticTrip(window.TRIP));
+  const [trip, setTrip] = React.useState(null);
   const [userProfile, setUserProfile] = React.useState(loadUserProfile);
   const [loginOpen, setLoginOpen] = React.useState(() => !loadUserProfile()?.profileSetupComplete);
   const [planningStatus, setPlanningStatus] = React.useState({ state: "idle", message: "" });
+  const [savedTripsOpen, setSavedTripsOpen] = React.useState(false);
+  const [savedTrips, setSavedTrips] = React.useState([]);
+  const [savedTripsBusy, setSavedTripsBusy] = React.useState(false);
   const isOverview = activeDay === 0;
-  const ad = trip.days[activeDay - 1] || trip.days[0];
+  const ad = trip ? (trip.days[activeDay - 1] || trip.days[0]) : null;
+
+  async function openSavedTrips() {
+    setSavedTripsOpen(true);
+    setSavedTripsBusy(true);
+    try {
+      const data = await window.TripAgentApi.listTrips();
+      setSavedTrips(data.trips || []);
+    } catch {
+      setSavedTrips([]);
+    } finally {
+      setSavedTripsBusy(false);
+    }
+  }
+
+  async function loadAndViewTrip(tripId) {
+    setSavedTripsBusy(true);
+    try {
+      const data = await window.TripAgentApi.getTrip(tripId);
+      const itinerary = data.itinerary || data;
+      const nextTrip = itinerary?.days
+        ? normalizeBackendTrip(
+            {
+              ...data,
+              itinerary,
+              place_details: data.place_details || {},
+              destination_pack: data.destination_pack || { country: itinerary.destination_pack_id || "Saved trip" },
+            },
+            userProfile,
+            {}
+          )
+        : null;
+      if (nextTrip) {
+        setTrip(nextTrip);
+        setActiveDay(0);
+        setPlanningStatus({ state: "ready", message: `Loaded: ${nextTrip.title}` });
+      }
+      setSavedTripsOpen(false);
+    } catch {
+      // silently fail
+    } finally {
+      setSavedTripsBusy(false);
+    }
+  }
 
   async function persistProfileToBackend(nextProfile) {
     try {
@@ -169,9 +215,12 @@ function DirectionB() {
     }
   }
 
-  async function saveTripToBackend(itinerary) {
+  async function saveTripToBackend(planPayload) {
     try {
-      await saveTrip(itinerary);
+      const payload = planPayload?.itinerary
+        ? { itinerary: planPayload.itinerary, place_details: planPayload.place_details || {} }
+        : planPayload;
+      await saveTrip(payload);
     } catch {
       // Saving is best-effort; the generated trip still renders in the browser.
     }
@@ -180,19 +229,17 @@ function DirectionB() {
   function applyGeneratedPlan(data, request = {}) {
     if (!data?.itinerary) return;
     const nextProfile = userProfile || data.itinerary.profile || { name: "Traveler", travelers: data.itinerary.profile?.travelers || 1 };
-    const livePlan = isLivePlanMode(data.mode);
-    const nextTrip = livePlan
-      ? normalizeBackendTrip(data, nextProfile, request)
-      : normalizeStaticTrip(window.TRIP, true);
+    const isCuratedDemo = Array.isArray(data.tool_trace) && data.tool_trace.includes("curated_japan_demo");
+    const nextTrip = normalizeBackendTrip(data, nextProfile, request);
     setTrip(nextTrip);
     setActiveDay(0);
     setPlanningStatus({
-      state: livePlan ? "ready" : "fallback",
-      message: livePlan
-        ? `${nextTrip.title} is now reflected on the left.`
-        : "The live plan was not available, so the left side is showing the Japan sample itinerary.",
+      state: "ready",
+      message: isCuratedDemo
+        ? "The curated Japan demo is now reflected on the left."
+        : `${nextTrip.title} is now reflected on the left.`,
     });
-    saveTripToBackend(data.itinerary);
+    saveTripToBackend(data);
   }
 
   // Lightweight status/price chips derived from stop category so each card
@@ -311,14 +358,12 @@ function DirectionB() {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M12 2C7.6 2 4 5.6 4 10c0 5.2 7.3 11.5 7.6 11.8.2.2.6.2.8 0C12.7 21.5 20 15.2 20 10c0-4.4-3.6-8-8-8zm0 11c-1.7 0-3-1.3-3-3s1.3-3 3-3 3 1.3 3 3-1.3 3-3 3z" /></svg>
           </div>
           <div>
-            <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: "-0.01em" }}>{trip.destinationLabel}</div>
-            <div className="muted" style={{ fontSize: 12 }}>{trip.prepared_for} · {trip.travelers} travelers · {trip.dates}</div>
+            <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: "-0.01em" }}>{trip ? trip.destinationLabel : "Reiko"}</div>
+            <div className="muted" style={{ fontSize: 12 }}>{trip ? `${trip.prepared_for} · ${trip.travelers} travelers · ${trip.dates}` : "Your Personal Travel Curator"}</div>
           </div>
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <button className="btn tag">Demo script</button>
-          <button className="btn tag">Saved trips</button>
-          <button className="btn primary">Approve route</button>
+          <button className="btn tag" onClick={openSavedTrips}>Saved trips</button>
           <window.UserProfileMenu
             userProfile={userProfile}
             onOpen={() => setLoginOpen(true)}
@@ -329,6 +374,9 @@ function DirectionB() {
       {/* Two-column layout: content on the left, sticky agent chat on the right */}
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: 20, padding: "0 20px 32px 0" }}>
         <div style={{ minWidth: 0 }}>
+
+      {trip ? (
+      <>
 
       {/* Compact title + stats strip */}
       <section style={{ padding: "32px 24px 24px 40px", display: "flex", justifyContent: "space-between", alignItems: "end", gap: 24, flexWrap: "wrap" }}>
@@ -535,6 +583,262 @@ function DirectionB() {
 
       <window.PackingList trip={trip} />
 
+      </>
+      ) : (
+        /* Empty state — make the first screen feel like a working travel desk. */
+        <section style={{ padding: "72px 40px 60px" }}>
+          <div style={{
+            maxWidth: 980,
+            margin: "0 auto",
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1.05fr) minmax(280px, 0.95fr)",
+            gap: 28,
+            alignItems: "stretch",
+          }}>
+            <div style={{
+              minHeight: 430,
+              borderRadius: 24,
+              padding: "34px 36px",
+              background: "linear-gradient(145deg, #F7F4ED 0%, #EEF3EE 48%, #EEF2F6 100%)",
+              border: "1px solid rgba(210,210,215,0.78)",
+              boxShadow: "0 18px 48px rgba(29,29,31,0.08)",
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "space-between",
+              overflow: "hidden",
+              position: "relative",
+            }}>
+              <svg
+                viewBox="0 0 620 430"
+                role="img"
+                aria-label="Reiko welcomes the traveler"
+                style={{ width: "100%", height: "100%", minHeight: 430, display: "block", position: "relative" }}
+              >
+                <defs>
+                  <linearGradient id="welcome-sky" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0%" stopColor="#FFF9EF" />
+                    <stop offset="58%" stopColor="#EDF5EE" />
+                    <stop offset="100%" stopColor="#EAF2F7" />
+                  </linearGradient>
+                  <linearGradient id="welcome-sun" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0%" stopColor="#FFD98E" />
+                    <stop offset="100%" stopColor="#F3A45E" />
+                  </linearGradient>
+                  <filter id="welcome-soft-shadow" x="-20%" y="-20%" width="140%" height="140%">
+                    <feDropShadow dx="0" dy="12" stdDeviation="14" floodColor="#1D1D1F" floodOpacity="0.12" />
+                  </filter>
+                </defs>
+
+                <rect x="0" y="0" width="620" height="430" rx="24" fill="url(#welcome-sky)" />
+                <circle cx="548" cy="44" r="118" fill="#FFFEFA" opacity="0.58" />
+                <circle cx="92" cy="80" r="34" fill="url(#welcome-sun)" opacity="0.82" />
+                <path d="M426 64C472 72 509 103 548 145" fill="none" stroke="#D9E2DA" strokeWidth="3" strokeDasharray="7 9" strokeLinecap="round" />
+                <path d="M548 145L530 139L540 158Z" fill="#9AB7A1" />
+
+                <g filter="url(#welcome-soft-shadow)">
+                  <rect x="298" y="70" width="250" height="132" rx="30" fill="#FFFEFA" />
+                  <path d="M342 192L318 226L374 198Z" fill="#FFFEFA" />
+                  <text x="328" y="116" fill="#1D1D1F" fontFamily="var(--sans)" fontSize="22" fontWeight="800">
+                    {userProfile ? "Welcome back!" : "Hi, I am Reiko!"}
+                  </text>
+                  <text x="328" y="148" fill="#55565C" fontFamily="var(--sans)" fontSize="17" fontWeight="500">
+                    {userProfile ? "Your travel concierge is ready." : "Your travel concierge is here."}
+                  </text>
+                  <text x="328" y="176" fill="#55565C" fontFamily="var(--sans)" fontSize="17" fontWeight="500">
+                    I will handle the route.
+                  </text>
+                </g>
+
+                <g transform="translate(92 116)" filter="url(#welcome-soft-shadow)">
+                  <ellipse cx="132" cy="304" rx="130" ry="24" fill="#CED9D1" opacity="0.55" />
+                  <rect x="176" y="222" width="82" height="72" rx="15" fill="#E8B66F" />
+                  <path d="M195 222V211C195 199 239 199 239 211V222" fill="none" stroke="#7A5B39" strokeWidth="8" strokeLinecap="round" />
+                  <rect x="196" y="238" width="12" height="12" rx="3" fill="#FFE8BC" />
+                  <rect x="226" y="238" width="36" height="10" rx="5" fill="#BF7B42" opacity="0.48" />
+                  <circle cx="199" cy="296" r="7" fill="#665245" />
+                  <circle cx="238" cy="296" r="7" fill="#665245" />
+
+                  <path d="M74 252C81 222 98 204 132 204C166 204 183 222 190 252L178 318H84Z" fill="#2F4B44" />
+                  <path d="M104 222H160L151 318H113Z" fill="#FFFEFA" />
+                  <path d="M104 222L125 318H84L74 252C78 234 88 224 104 222Z" fill="#3F6E64" />
+                  <path d="M160 222L139 318H178L190 252C186 234 176 224 160 222Z" fill="#3F6E64" />
+                  <path d="M111 318V344" stroke="#2F4B44" strokeWidth="18" strokeLinecap="round" />
+                  <path d="M157 318V344" stroke="#2F4B44" strokeWidth="18" strokeLinecap="round" />
+                  <path d="M94 350H124" stroke="#4A3728" strokeWidth="10" strokeLinecap="round" />
+                  <path d="M144 350H174" stroke="#4A3728" strokeWidth="10" strokeLinecap="round" />
+                  <path d="M87 190C73 211 72 246 91 264C110 282 158 283 172 263C188 240 184 211 171 190Z" fill="#F2CFAB" />
+                  <path d="M86 159C90 133 174 133 179 159L174 174H91Z" fill="#30453F" />
+                  <rect x="91" y="150" width="83" height="20" rx="10" fill="#3F6E64" />
+                  <rect x="108" y="138" width="48" height="20" rx="9" fill="#3F6E64" />
+                  <circle cx="132" cy="154" r="5" fill="#E8B66F" />
+                  <path d="M78 182C78 142 185 142 185 182C185 196 180 204 174 211C174 176 96 175 86 211C80 204 78 195 78 182Z" fill="#4A3728" />
+                  <path d="M79 190C65 198 63 226 77 235" fill="none" stroke="#4A3728" strokeWidth="5" strokeLinecap="round" />
+                  <path d="M185 190C199 198 201 226 187 235" fill="none" stroke="#4A3728" strokeWidth="5" strokeLinecap="round" />
+                  <circle cx="112" cy="214" r="4" fill="#2C1810" />
+                  <circle cx="152" cy="214" r="4" fill="#2C1810" />
+                  <circle cx="103" cy="230" r="9" fill="#F3A7A5" opacity="0.55" />
+                  <circle cx="161" cy="230" r="9" fill="#F3A7A5" opacity="0.55" />
+                  <path d="M118 239C126 247 142 247 150 239" fill="none" stroke="#C97D60" strokeWidth="4" strokeLinecap="round" />
+                  <path d="M119 265L132 279L145 265" fill="#C34A3A" />
+                  <path d="M122 267L132 259L142 267L132 277Z" fill="#B84033" />
+                  <circle cx="132" cy="294" r="4" fill="#D9B772" />
+                  <circle cx="132" cy="312" r="4" fill="#D9B772" />
+                  <path d="M77 256C45 252 32 223 49 206C64 191 82 212 87 238" fill="#F2CFAB" />
+                  <path d="M47 207C32 199 21 195 12 195" fill="none" stroke="#3F6E64" strokeWidth="8" strokeLinecap="round" />
+                  <path d="M183 256C222 244 230 215 208 203C189 193 180 213 177 239" fill="#F2CFAB" />
+                  <path d="M213 207C235 193 249 174 257 154" fill="none" stroke="#3F6E64" strokeWidth="8" strokeLinecap="round" />
+                  <ellipse cx="261" cy="151" rx="42" ry="10" fill="#6B5A4A" />
+                  <rect x="226" y="120" width="45" height="31" rx="6" fill="#FFFEFA" />
+                  <path d="M233 130H262M233 139H252" stroke="#AAB8AF" strokeWidth="3" strokeLinecap="round" />
+                  <rect x="273" y="126" width="32" height="25" rx="5" fill="#DCE9E0" />
+                  <path d="M280 133L288 130L298 134V144L288 147L280 144Z" fill="#9AB7A1" />
+                </g>
+
+                <g transform="translate(70 54)">
+                  <rect x="0" y="0" width="112" height="72" rx="16" fill="#FFFEFA" opacity="0.9" />
+                  <path d="M18 18L44 10L72 20L100 12V54L72 62L44 52L18 60Z" fill="#DCE9E0" />
+                  <path d="M44 10V52M72 20V62" stroke="#B8CBBE" strokeWidth="2" />
+                  <circle cx="78" cy="32" r="7" fill="#E66F51" />
+                  <path d="M78 28C73 35 78 43 78 43C78 43 83 35 78 28Z" fill="#C94D35" />
+                </g>
+              </svg>
+            </div>
+
+            <div className="card-lg" style={{
+              padding: "26px 28px 26px",
+              border: "1px solid var(--rule-soft)",
+              display: "grid",
+              alignContent: "center",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, marginBottom: 24 }}>
+                <div>
+                  <div className="mono accent">USER FLOW</div>
+                  <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: "-0.02em", marginTop: 7 }}>
+                    From profile to itinerary
+                  </div>
+                </div>
+                <div style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 999,
+                  background: "var(--tag)",
+                  display: "grid",
+                  placeItems: "center",
+                  color: "var(--ink-2)",
+                  fontSize: 18,
+                  fontWeight: 800,
+                }}>→</div>
+              </div>
+              <div style={{ position: "relative", display: "grid", gap: 0 }}>
+                <div style={{
+                  position: "absolute",
+                  left: 17,
+                  top: 18,
+                  bottom: 18,
+                  width: 2,
+                  background: "var(--rule-soft)",
+                }} />
+                {[
+                  {
+                    n: "1",
+                    title: "Fill in your profile",
+                    note: userProfile
+                      ? [userProfile.homeAirport, userProfile.travelers ? `${userProfile.travelers} travelers` : null, userProfile.budget].filter(Boolean).join(" · ")
+                      : "Airport, travelers, budget.",
+                    state: userProfile ? "done" : "current",
+                    action: () => setLoginOpen(true),
+                    actionLabel: userProfile ? "Edit" : "Start",
+                  },
+                  {
+                    n: "2",
+                    title: "Tell Reiko your destination",
+                    note: "Use the chat on the right.",
+                    state: userProfile ? "current" : "upcoming",
+                    arrow: userProfile,
+                  },
+                  {
+                    n: "3",
+                    title: "Reiko builds itinerary",
+                    note: "Route, days, stops, restaurants.",
+                    state: "upcoming",
+                  },
+                  {
+                    n: "4",
+                    title: "Review route + booking checklist",
+                    note: "Approve, adjust, then book.",
+                    state: "upcoming",
+                  },
+                ].map((step, index) => {
+                  const current = step.state === "current";
+                  const done = step.state === "done";
+                  return (
+                    <div key={step.title} style={{
+                      position: "relative",
+                      display: "grid",
+                      gridTemplateColumns: "36px 1fr",
+                      gap: 15,
+                      paddingBottom: index === 3 ? 0 : 25,
+                    }}>
+                      <div style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 999,
+                        background: done ? "#34C759" : current ? "var(--ink)" : "var(--paper)",
+                        border: current || done ? "none" : "1px solid var(--rule)",
+                        color: current || done ? "var(--bg)" : "var(--muted)",
+                        display: "grid",
+                        placeItems: "center",
+                        fontSize: done ? 17 : 13,
+                        fontWeight: 800,
+                        zIndex: 1,
+                        boxShadow: current ? "0 0 0 4px var(--accent-soft)" : "none",
+                      }}>{done ? "✓" : step.n}</div>
+                      <div style={{ minWidth: 0, paddingTop: 1 }}>
+                        <div style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "baseline",
+                          gap: 10,
+                          marginBottom: 4,
+                        }}>
+                          <div style={{
+                            fontSize: current ? 18 : 16,
+                            fontWeight: current ? 800 : 700,
+                            letterSpacing: "-0.02em",
+                            color: step.state === "upcoming" ? "var(--ink-2)" : "var(--ink)",
+                          }}>{step.title}</div>
+                          {step.actionLabel && (
+                            <button className="btn tag" style={{ padding: "6px 11px", fontSize: 12 }} onClick={step.action}>
+                              {step.actionLabel}
+                            </button>
+                          )}
+                        </div>
+                        <div className="muted" style={{ fontSize: 13, lineHeight: 1.42 }}>
+                          {step.note || "Ready."}
+                        </div>
+                        {step.arrow && (
+                          <div style={{
+                            marginTop: 10,
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 8,
+                            color: "var(--ink)",
+                            fontSize: 13,
+                            fontWeight: 800,
+                          }}>
+                            <span>Go to chat</span>
+                            <span aria-hidden="true" style={{ fontSize: 20, lineHeight: 1 }}>→</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
         </div>{/* /left column */}
 
         {/* Right rail — sticky AgentChat */}
@@ -563,6 +867,43 @@ function DirectionB() {
           }}
           onClose={() => setLoginOpen(false)}
         />
+      )}
+
+      {savedTripsOpen && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+          background: "rgba(0,0,0,0.3)", backdropFilter: "blur(4px)",
+          zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center",
+        }} onClick={() => setSavedTripsOpen(false)}>
+          <div style={{
+            background: "white", borderRadius: 16, padding: "28px 32px",
+            maxWidth: 480, width: "90%", maxHeight: "70vh", overflowY: "auto",
+            boxShadow: "0 20px 60px rgba(0,0,0,0.15)",
+          }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <h2 className="serif" style={{ fontSize: 22, margin: 0 }}>Saved Trips</h2>
+              <button className="btn tag" onClick={() => setSavedTripsOpen(false)}>Close</button>
+            </div>
+            {savedTripsBusy && <div className="muted" style={{ textAlign: "center", padding: 24 }}>Loading...</div>}
+            {!savedTripsBusy && savedTrips.length === 0 && (
+              <div className="muted" style={{ textAlign: "center", padding: 24 }}>
+                No saved trips yet. Generate a trip and it will appear here.
+              </div>
+            )}
+            {!savedTripsBusy && savedTrips.map((t) => (
+              <div key={t.id} className="card" style={{
+                padding: "16px 20px", marginBottom: 10, cursor: "pointer",
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+              }} onClick={() => loadAndViewTrip(t.id)}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 15 }}>{t.title}</div>
+                  <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>{t.dates}</div>
+                </div>
+                <span className="muted" style={{ fontSize: 12 }}>→</span>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );

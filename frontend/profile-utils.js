@@ -105,7 +105,7 @@ function planProfilePayload(userProfile, trip) {
     email: userProfile?.email || "",
     home_airport: userProfile?.homeAirport || "",
     passport_country: userProfile?.passportCountry || "United States",
-    travelers: normalizeTravelers(userProfile?.travelers, trip.travelers || 1),
+    travelers: normalizeTravelers(userProfile?.travelers, trip?.travelers || 1),
     budget: userProfile?.budget || "Moderate",
     pace: normalizePace(userProfile?.pace || userProfile?.travelVibe || userProfile?.travelStyle),
     travel_month: userProfile?.travelMonth || userProfile?.tripRequest?.month || "",

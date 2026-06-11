@@ -17,8 +17,14 @@ class Settings(BaseSettings):
     mongodb_trips_collection: str = "trips"
     mongodb_profiles_collection: str = "profiles"
     mongodb_destination_packs_collection: str = "destination_packs"
+    mongodb_place_cache_collection: str = "place_cache"
     mongodb_vector_index: str = "trip_agent_vector_index"
     mongodb_mcp_server_url: str | None = None
+
+    # Reuse previously fetched Google Maps candidates per city instead of
+    # re-querying (and re-paying) on every plan. TTL keeps ratings/hours fresh.
+    enable_place_cache: bool = True
+    place_cache_ttl_days: int = 30
 
     google_maps_api_key: str | None = None
     openweather_api_key: str | None = None

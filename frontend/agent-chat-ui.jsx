@@ -151,6 +151,8 @@ function ChatBubble({ role, text, typing, toolTrace, agentLabel, agentEmoji, boo
       display: "flex",
       flexDirection: "column",
       alignItems: isUser ? "flex-end" : "flex-start",
+      width: "100%",
+      minWidth: 0,
     }}>
       {!isUser && agentLabel && (
         <div style={{
@@ -208,7 +210,7 @@ function BookingOptionGroup({ searches, onSelect }) {
   const hotelGroups = searches.hotels?.cityGroups;
 
   return (
-    <div style={{ width: "100%", marginTop: 8, display: "grid", gap: 8 }}>
+    <div style={{ width: "100%", maxWidth: "100%", minWidth: 0, marginTop: 8, display: "grid", gap: 8, overflow: "hidden" }}>
       {searches.flights && (
         <div style={{ display: "grid", gap: 8 }}>
           {(searches.flights.options || []).slice(0, 3).map((option) => (
@@ -218,16 +220,17 @@ function BookingOptionGroup({ searches, onSelect }) {
       )}
       {searches.hotels && hotelGroups && hotelGroups.length > 0 && (
         // Multi-city: grouped by city with header per section
-        <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "grid", gap: 9, minWidth: 0 }}>
           {hotelGroups.map((group) => (
-            <div key={group.city} style={{ display: "grid", gap: 6 }}>
+            <div key={group.city} style={{ display: "grid", gap: 5, minWidth: 0 }}>
               <div style={{
                 fontSize: 12, fontWeight: 700, color: "var(--ink)",
                 padding: "4px 2px 0",
                 display: "flex", alignItems: "center", gap: 6,
+                minWidth: 0,
               }}>
-                <span>🏨 {group.city}</span>
-                <span style={{ fontWeight: 500, color: "var(--muted)" }}>
+                <span style={{ flex: "1 1 0", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>🏨 {group.city}</span>
+                <span style={{ fontWeight: 500, color: "var(--muted)", flex: "0 0 auto" }}>
                   · {group.nights} night{group.nights === 1 ? "" : "s"}
                 </span>
               </div>
@@ -244,7 +247,7 @@ function BookingOptionGroup({ searches, onSelect }) {
       )}
       {searches.hotels && !hotelGroups && (
         // Single-city: flat list (unchanged behavior)
-        <div style={{ display: "grid", gap: 6 }}>
+        <div style={{ display: "grid", gap: 5, minWidth: 0 }}>
           {(searches.hotels.options || []).slice(0, 3).map((option) => (
             <HotelOptionCard
               key={option.id}
@@ -263,25 +266,25 @@ function HotelOptionCard({ option, onClick }) {
   const reviews = Number(option.review_count || 0).toLocaleString();
   return (
     <button type="button" onClick={onClick} style={hotelCardStyle()}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "start" }}>
-        <div style={{ minWidth: 0 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "start", minWidth: 0 }}>
+        <div style={{ flex: "1 1 0", minWidth: 0, maxWidth: "100%", overflow: "hidden" }}>
           <div style={{ fontSize: 13, fontWeight: 750, lineHeight: 1.25, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{option.name}</div>
-          <div className="muted" style={{ fontSize: 11, marginTop: 3, lineHeight: 1.25 }}>{option.city || option.area} · {option.area}</div>
+          <div className="muted" style={{ fontSize: 10.5, marginTop: 3, lineHeight: 1.25, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{option.city || option.area} · {option.area}</div>
         </div>
-        <div style={{ textAlign: "right", flex: "0 0 auto" }}>
-          <div style={{ fontSize: 13, fontWeight: 750 }}>${Number(option.price_per_night_usd || 0).toLocaleString()}</div>
+        <div style={{ textAlign: "right", flex: "0 0 auto", maxWidth: 62 }}>
+          <div style={{ fontSize: 13, fontWeight: 750, whiteSpace: "nowrap" }}>${Number(option.price_per_night_usd || 0).toLocaleString()}</div>
           <div className="muted" style={{ fontSize: 10 }}>/night</div>
         </div>
       </div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <span className="muted" style={{ fontSize: 11 }}>{Number(option.rating || 0).toFixed(1)} rating · {reviews} reviews</span>
-        <span style={{ fontSize: 11, fontWeight: 700, color: "#1F6FEB" }}>Review hotel</span>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, flexWrap: "wrap", minWidth: 0 }}>
+        <span className="muted" style={{ flex: "1 1 120px", fontSize: 10.5, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{Number(option.rating || 0).toFixed(1)} rating · {reviews} reviews</span>
+        <span style={{ fontSize: 10.5, fontWeight: 700, color: "#1F6FEB", flex: "0 0 auto" }}>Review hotel</span>
       </div>
       {tags.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
           {tags.map((tag) => (
             <span key={tag} style={{
-              padding: "4px 7px",
+              padding: "3px 7px",
               borderRadius: 999,
               background: "var(--tag)",
               color: "var(--ink-2)",
@@ -416,16 +419,20 @@ function optionCardStyle() {
 function hotelCardStyle() {
   return {
     width: "100%",
+    maxWidth: "100%",
+    minWidth: 0,
     border: "1px solid var(--rule-soft)",
     borderRadius: 14,
     background: "var(--paper)",
     color: "var(--ink)",
-    padding: "11px 12px",
+    padding: "9px 10px",
     display: "grid",
-    gap: 9,
+    gap: 7,
     textAlign: "left",
     boxShadow: "var(--shadow-sm)",
     cursor: "pointer",
+    overflow: "hidden",
+    boxSizing: "border-box",
   };
 }
 

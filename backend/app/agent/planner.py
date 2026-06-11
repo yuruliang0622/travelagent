@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 logger = logging.getLogger(__name__)
 
 from app.config import get_settings
-from app.data.mock_data import JAPAN_PACK, itinerary_for_profile
+from app.data.mock_data import CURATED_JAPAN_PLACE_DETAILS, JAPAN_PACK, itinerary_for_profile
 from app.models import (
     AgentChatRequest,
     AgentChatResponse,
@@ -22,6 +22,7 @@ from app.agent.prompts import (
     build_day_system_prompt,
     build_day_user_message,
     build_skeleton_prompt,
+    get_transit_info,
 )
 from app.agent.request_helpers import day_allocation_from_prompt, days_from_prompt, destination_for_request, destination_pack_for_request, prompt_for_request, slug
 from app.agent.tools import CHAT_TOOLS, dispatch_chat_tool
@@ -47,6 +48,34 @@ class TripPlanner:
         fallback_itinerary = itinerary_for_profile(profile)
         destination_pack = destination_pack_for_request(request)
         settings = get_settings()
+
+        if _is_curated_japan_demo(request):
+            if request.start_date and request.end_date:
+                fallback_itinerary.dates = f"{request.start_date} - {request.end_date}"
+            tool_trace = [
+                "curated_japan_demo",
+                "demo_flight_anchor",
+                "curated_place_details",
+            ]
+            try:
+                repository.save_trip(fallback_itinerary)
+                tool_trace.append("save_trip (MongoDB Atlas)")
+            except Exception:
+                pass
+            return PlanTripResponse(
+                mode="mock",
+                prompt=prompt_for_request(request),
+                destination_pack=JAPAN_PACK,
+                itinerary=fallback_itinerary,
+                memory_used=bool(profile and profile.memory_consent),
+                next_integrations=[
+                    "Curated Japan demo returned instantly for recording stability.",
+                    "Live Gemini remains available for non-demo trips.",
+                    "Curated ratings, review counts, hours, and Google Maps links included.",
+                ],
+                tool_trace=tool_trace,
+                place_details=dict(CURATED_JAPAN_PLACE_DETAILS),
+            )
 
         if settings.enable_live_gemini and settings.google_cloud_project:
             result = self._try_agent_plan(request, fallback_itinerary, destination_pack, repository)
@@ -217,8 +246,20 @@ class TripPlanner:
             city = day_info["city"]
             city_atts = [a for a in attractions if (a.get("city") or "").lower() == city.lower()]
 
+            # Check if city changed from previous day → inject transit
+            prev_city = ""
+            if day_num > 1:
+                for d in skeleton:
+                    if d["day_number"] == day_num - 1:
+                        prev_city = d["city"]
+                        break
+
+            transit = None
+            if prev_city and prev_city.lower() != city.lower():
+                transit = get_transit_info(prev_city, city)
+
             day_system = build_day_system_prompt(city)
-            day_user = build_day_user_message(day_num, city, city_atts, profile)
+            day_user = build_day_user_message(day_num, city, city_atts, profile, transit_from=transit)
 
             day_text = generate_text(
                 system_prompt=day_system,
@@ -238,6 +279,7 @@ class TripPlanner:
                 return None, [], f"Day {day_num} ({city}): unexpected JSON type — skipping"
 
             day_json["day_number"] = day_num
+            day_json["area"] = city  # enforce skeleton city — never trust Gemini's area
             places = day_json.pop("places", []) if isinstance(day_json.get("places"), list) else []
             trace = f"Day {day_num} ({city}): {len(day_json.get('segments', []))} segments"
             return day_json, places, trace
@@ -329,6 +371,20 @@ def _build_skeleton(
     return skeleton
 
 
+def _is_curated_japan_demo(request: PlanTripRequest) -> bool:
+    """Use the stable hand-curated Japan demo instead of live generation."""
+    if request.destination_pack_id == "japan":
+        return True
+    destination = (request.destination or "").strip().lower()
+    prompt = (request.prompt or "").strip().lower()
+    return (
+        "japan" in destination
+        or "japan curated demo" in prompt
+        or "trip to japan" in prompt
+        or "days in japan" in prompt
+    )
+
+
 planner = TripPlanner()
 
 
@@ -349,8 +405,12 @@ def _resolve_place_details(
     prefetched_attractions: list[dict],
     prefetched_restaurants: list[dict],
 ) -> dict[str, dict]:
-    """Match winning segments back to prefetched data to get real place_ids,
-    then batch-resolve full details (phone, hours, website, photos)."""
+    """Resolve full Google details for final winning stops only.
+
+    `segment.place_ids` should point to local `itinerary.places[].id` values.
+    Google's real place_id lives separately on MapPlace.google_place_id. This
+    keeps frontend lookups stable while still letting the backend call Google.
+    """
     import re
 
     def _norm(value: str) -> str:
@@ -358,7 +418,10 @@ def _resolve_place_details(
         base = re.sub(r"[^a-z0-9]+", " ", base)
         return re.sub(r"\s+", " ", base).strip()
 
-    # Build lookup: normalized_name → real Google Maps place_id
+    places_by_id = {place.id: place for place in itinerary.places}
+
+    # Fallback lookup for older/generated places that do not yet carry
+    # google_place_id. New enriched places should use google_place_id first.
     name_to_pid: dict[str, str] = {}
     for a in prefetched_attractions:
         if a.get("place_id"):
@@ -367,31 +430,32 @@ def _resolve_place_details(
         if r.get("place_id"):
             name_to_pid[restaurant_identity(r["name"])] = r["place_id"]
 
-    # Match segments → real place_ids (exact first, then substring)
-    real_pids: dict[str, str] = {}  # slug_key → real place_id
+    real_pids: dict[str, str] = {}  # local place id → Google place_id
     for day in itinerary.days:
         for seg in day.segments:
-            seg_norm = _norm(seg.title)
-            pid = name_to_pid.get(seg_norm)
+            local_key = seg.place_ids[0] if seg.place_ids else _norm(seg.title)
+            place = places_by_id.get(local_key) if seg.place_ids else None
+            pid = getattr(place, "google_place_id", "") if place else ""
+
             if not pid:
-                # Fuzzy: check if segment title contains a prefetched name or vice versa
-                for name_norm, candidate_pid in name_to_pid.items():
-                    if len(name_norm) > 4 and (name_norm in seg_norm or seg_norm in name_norm):
-                        pid = candidate_pid
-                        break
+                seg_norm = _norm(seg.title)
+                pid = name_to_pid.get(seg_norm, "")
+                if not pid:
+                    for name_norm, candidate_pid in name_to_pid.items():
+                        if len(name_norm) > 4 and (name_norm in seg_norm or seg_norm in name_norm):
+                            pid = candidate_pid
+                            break
+
             if pid:
-                key = seg.place_ids[0] if seg.place_ids else seg_norm
-                real_pids[key] = pid
+                real_pids[local_key] = pid
 
     if not real_pids:
         return {}
 
-    # Batch resolve with real place_ids
-    raw = batch_get_place_details(list(real_pids.values()))
+    raw = batch_get_place_details(list(dict.fromkeys(real_pids.values())))
 
-    # Re-key by slug for frontend lookup
     result: dict[str, dict] = {}
-    for slug_key, pid in real_pids.items():
+    for local_key, pid in real_pids.items():
         if pid in raw:
-            result[slug_key] = raw[pid]
+            result[local_key] = raw[pid]
     return result

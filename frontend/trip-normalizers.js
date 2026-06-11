@@ -13,7 +13,11 @@ function normalizeStaticTrip(trip, fallback = false) {
 }
 
 function normalizeBackendTrip(response, profile, request) {
-  const itinerary = response.itinerary;
+  const savedResponse = response?.itinerary?.itinerary
+    ? { ...response.itinerary, destination_pack: response.destination_pack }
+    : response;
+  const itinerary = savedResponse.itinerary || savedResponse;
+  response = savedResponse.itinerary ? savedResponse : { ...savedResponse, itinerary };
   const placesById = new Map((itinerary.places || []).map((place) => [place.id, place]));
   const days = (itinerary.days || [])
     .filter((day) => day.day_number > 0)
@@ -51,7 +55,7 @@ function normalizeBackendTrip(response, profile, request) {
       };
     });
   // Merge real Google Maps place details into stops
-  const placeDetails = response.place_details || {};
+  const placeDetails = response.place_details || itinerary.place_details || {};
   if (Object.keys(placeDetails).length) {
     for (const day of days) {
       for (const stop of day.stops) {

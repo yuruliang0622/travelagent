@@ -1,10 +1,9 @@
 import random
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.config import get_settings
 from app.models import DestinationPack, Itinerary, MapPlace, PlaceCategory, PlanTripRequest
-from app.integrations.maps import get_place_details, search_text_multi
+from app.integrations.maps import search_text_multi
 
 
 ATTRACTION_AXES_BY_CITY = {
@@ -35,6 +34,13 @@ FALLBACK_QUERIES = [
 FOOD_KEYWORDS = ("restaurant", "café", "cafe", "ramen", "sushi", "izakaya", "bar", "grill", "steakhouse", "kitchen")
 
 
+# Cache a larger pool per city, then randomly sample from it on each plan.
+# Sampling happens AFTER the cache lookup, so it adds variety across
+# regenerations without ever costing an extra Google call.
+ATTRACTION_CACHE_POOL_SIZE = 30
+PER_CITY_ATTRACTION_LIMIT = 10
+
+
 def prefetch_attractions(
     request: PlanTripRequest,
     destination: str,
@@ -43,8 +49,10 @@ def prefetch_attractions(
     """Fetch real attraction candidates for every city on the route.
 
     Loops over ALL destination_pack.regions so prefetch covers the full route.
-    Each result includes a semantic tag (derived from the search axis) and a
-    one-line description fetched via Place Details.
+    Each city is served from the place cache when available, so regenerating a
+    trip for the same destination reuses prior results instead of re-querying
+    (and re-paying) Google. Each result includes a semantic tag and a tag-based
+    description (full details are resolved later in Stage 3 for winners only).
     """
     settings = get_settings()
     if not settings.google_maps_api_key or not settings.enable_live_maps:
@@ -53,25 +61,53 @@ def prefetch_attractions(
     profile = request.profile
     interests = (profile.interests or []) if profile else []
 
-    tagged_queries: list[tuple[str, str, str]] = []  # (query, city, tag)
-
+    results: list[dict] = []
     for city in destination_pack.regions:
-        city_search = f"{city}, {destination}" if city.lower() not in destination.lower() else destination
+        results.extend(_city_attractions(destination, city, interests))
+    return results
 
-        # Interest-driven queries
-        for interest in interests[:3]:
-            tagged_queries.append((f"top {interest} {city_search}", city, interest))
 
-        # City-specific axis queries
-        axes = ATTRACTION_AXES_BY_CITY.get(city.lower(), ATTRACTION_AXES_DEFAULT)
-        for axis in random.sample(axes, min(4, len(axes))):
-            tagged_queries.append((f"{axis} {city_search}", city, _axis_to_tag(axis)))
+def _city_attractions(destination: str, city: str, interests: list[str]) -> list[dict]:
+    """Return attraction candidates for one city.
 
-        # Broad fallbacks
-        for fb in FALLBACK_QUERIES:
-            tagged_queries.append((f"{fb} {city_search}", city, "attraction"))
+    A cached pool is reused when available (zero Google calls); otherwise we
+    fetch a pool and cache it. Either way we randomly sample down to the
+    per-city limit, so each regeneration sees a fresh mix without re-querying.
+    """
+    from app.storage.repository import repository
 
-    return _select_attractions(tagged_queries)
+    pool = repository.get_cached_places("attraction", city)
+    if pool is None:
+        tagged_queries = _attraction_queries_for_city(destination, city, interests)
+        pool = _select_attractions(tagged_queries, limit=ATTRACTION_CACHE_POOL_SIZE)
+        repository.cache_places("attraction", city, pool)
+
+    if len(pool) <= PER_CITY_ATTRACTION_LIMIT:
+        return list(pool)
+    return random.sample(pool, PER_CITY_ATTRACTION_LIMIT)
+
+
+def _attraction_queries_for_city(
+    destination: str, city: str, interests: list[str]
+) -> list[tuple[str, str, str]]:
+    """Build (query, city, tag) tuples for a single city."""
+    city_search = f"{city}, {destination}" if city.lower() not in destination.lower() else destination
+    tagged_queries: list[tuple[str, str, str]] = []
+
+    # Interest-driven queries
+    for interest in interests[:3]:
+        tagged_queries.append((f"top {interest} {city_search}", city, interest))
+
+    # City-specific axis queries
+    axes = ATTRACTION_AXES_BY_CITY.get(city.lower(), ATTRACTION_AXES_DEFAULT)
+    for axis in random.sample(axes, min(4, len(axes))):
+        tagged_queries.append((f"{axis} {city_search}", city, _axis_to_tag(axis)))
+
+    # Broad fallbacks
+    for fb in FALLBACK_QUERIES:
+        tagged_queries.append((f"{fb} {city_search}", city, "attraction"))
+
+    return tagged_queries
 
 
 # ── Tag derivation ────────────────────────────────────────────────────────────
@@ -171,27 +207,15 @@ def _label_for_attraction(attraction: dict) -> str:
 
 
 def _enrich_with_descriptions(attractions: list[dict]) -> None:
-    """Fetch editorial summary via Place Details, fall back to tag-based label."""
-    if not attractions:
-        return
+    """Set a tag-based label as each attraction's description.
 
-    def fetch(idx: int, pid: str) -> tuple[int, str]:
-        details = get_place_details(pid)
-        desc = details.get("review_highlight", "") if details else ""
-        return idx, desc
-
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {
-            executor.submit(fetch, i, a["place_id"]): i
-            for i, a in enumerate(attractions)
-            if a.get("place_id")
-        }
-        for future in as_completed(futures):
-            idx, desc = future.result()
-            if desc:
-                attractions[idx]["description"] = desc
-
-    # Fallback: generate label from tag for attractions without an editorial summary
+    We deliberately do NOT call Place Details here. Prefetch gathers far more
+    candidates than survive into the final itinerary, so paying for a Place
+    Details call on every candidate ran up a large Google bill for data the
+    agent mostly discarded. Editorial summaries and full details are resolved
+    later in Stage 3 (see planner._resolve_place_details) for winning segments
+    only. Name, rating, and coordinates already come free from Text Search.
+    """
     for attraction in attractions:
         if not attraction.get("description"):
             attraction["description"] = _label_for_attraction(attraction)
@@ -215,6 +239,7 @@ def attraction_to_place(attraction: dict, slugger) -> MapPlace:
             f"https://www.google.com/maps/place/?q=place_id:{attraction['place_id']}"
             if attraction.get("place_id") else ""
         ),
+        google_place_id=attraction.get("place_id", ""),
     )
 
 
@@ -277,11 +302,11 @@ def replace_unknown_attractions(
             used_names.add(_identity(replacement["name"]))
             rating_str = f" ⭐ {replacement['rating']}" if replacement.get("rating") else ""
             new_desc = (replacement.get("description") or seg.description or "") + rating_str
-            pid = replacement.get("place_id", "")
+            local_id = slugger(replacement["name"])
             updated_segments.append(seg.model_copy(update={
                 "title": replacement["name"],
                 "description": new_desc.strip(),
-                "place_ids": [pid] if pid else seg.place_ids,
+                "place_ids": [local_id],
             }))
 
         updated_days.append(day.model_copy(update={"segments": updated_segments}))

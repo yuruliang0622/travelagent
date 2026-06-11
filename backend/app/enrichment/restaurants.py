@@ -44,6 +44,12 @@ BREAKFAST_KEYWORDS = {
 }
 
 
+# Cache a larger pool per city, then randomly sample from it on each plan, so
+# regenerations stay varied without ever costing an extra Google call.
+RESTAURANT_CACHE_POOL_SIZE = 18
+PER_CITY_RESTAURANT_LIMIT = 6
+
+
 def prefetch_restaurants(
     request: PlanTripRequest,
     destination: str,
@@ -52,7 +58,8 @@ def prefetch_restaurants(
     """Fetch real restaurant candidates for every city on the route.
 
     Loops over ALL destination_pack.regions so cuisine prefetch covers the
-    full route. Each result is tagged with its cuisine type and city.
+    full route. Each city is served from the place cache when available, so
+    regenerating a trip reuses prior results instead of re-querying Google.
     """
     settings = get_settings()
     if not settings.google_maps_api_key or not settings.enable_live_maps:
@@ -73,17 +80,35 @@ def prefetch_restaurants(
     dining = next((p for p in food_prefs if any(k in p.lower() for k in dining_kw)), "")
     diet_prefix = f"{dietary} " if dietary else ""
 
-    # Build queries per city
-    all_tagged_queries: list[tuple[str, str, str]] = []  # (query, city, tag)
+    results: list[dict] = []
     for city in destination_pack.regions:
+        results.extend(_city_restaurants(destination, city, cuisine, dining, diet_prefix))
+    return results
+
+
+def _city_restaurants(
+    destination: str, city: str, cuisine: str, dining: str, diet_prefix: str
+) -> list[dict]:
+    """Return restaurant candidates for one city.
+
+    Reuses a cached pool when available (zero Google calls), otherwise fetches
+    and caches one. Either way we randomly sample down to the per-city limit so
+    each regeneration sees a fresh mix.
+    """
+    from app.storage.repository import repository
+
+    pool = repository.get_cached_places("restaurant", city)
+    if pool is None:
         city_search = f"{city}, {destination}" if city.lower() not in destination.lower() else destination
         city_queries = _restaurant_queries_for_city(city_search, city, cuisine, dining, diet_prefix)
-        all_tagged_queries.extend(city_queries)
+        if not city_queries:
+            return []
+        pool = _select_restaurant_candidates_v2(city_queries, limit=RESTAURANT_CACHE_POOL_SIZE)
+        repository.cache_places("restaurant", city, pool)
 
-    if not all_tagged_queries:
-        return []
-
-    return _select_restaurant_candidates_v2(all_tagged_queries)
+    if len(pool) <= PER_CITY_RESTAURANT_LIMIT:
+        return list(pool)
+    return random.sample(pool, PER_CITY_RESTAURANT_LIMIT)
 
 
 def apply_validated_coords(itinerary: Itinerary, prefetched: list[dict] | None = None) -> Itinerary:
@@ -314,28 +339,16 @@ def _label_for_restaurant(restaurant: dict) -> str:
 
 
 def _enrich_restaurant_details(restaurants: list[dict]) -> None:
-    """Fetch price + review_highlight via Place Details for restaurants that lack them."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from app.integrations.maps import get_place_details
+    """Set a tag-based label as each restaurant's review_highlight when missing.
 
-    def fetch(idx: int, pid: str) -> tuple[int, dict]:
-        return idx, get_place_details(pid)
-
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {
-            executor.submit(fetch, i, r["place_id"]): i
-            for i, r in enumerate(restaurants)
-            if r.get("place_id")
-        }
-        for future in as_completed(futures):
-            idx, details = future.result()
-            if details:
-                if details.get("price") and not restaurants[idx].get("price"):
-                    restaurants[idx]["price"] = details["price"]
-                if details.get("review_highlight") and not restaurants[idx].get("review_highlight"):
-                    restaurants[idx]["review_highlight"] = details["review_highlight"]
-                if details.get("rating") and not restaurants[idx].get("rating"):
-                    restaurants[idx]["rating"] = details["rating"]
+    Like the attractions path, we deliberately do NOT call Place Details during
+    prefetch — it billed Google for many candidates the agent later discarded.
+    Price and editorial details are resolved in Stage 3 for winning segments
+    only. rating already comes free from the Text Search results.
+    """
+    for restaurant in restaurants:
+        if not restaurant.get("review_highlight"):
+            restaurant["review_highlight"] = _label_for_restaurant(restaurant)
 
         # Fallback: generate label from tag for restaurants without editorial summary
         for restaurant in restaurants:
@@ -361,6 +374,7 @@ def _extra_restaurant_places(prefetched: list[dict], existing_lower: set[str], s
                 source="google-maps-places",
                 why_it_fits=(restaurant.get("review_highlight") or "Highly rated local restaurant")[:100],
                 google_maps_url=restaurant.get("google_maps_url", ""),
+                google_place_id=restaurant.get("place_id", ""),
             )
         )
     return extra_places

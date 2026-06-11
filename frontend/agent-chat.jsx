@@ -159,10 +159,13 @@ function AgentChat({ trip, userProfile, onProfileUpdate, onPlanGenerated }) {
 
   // Compact trip context for the model.
   const tripContext = React.useMemo(() => {
+    if (!trip) return `${profileContext(userProfile)}\nNo itinerary yet — user needs to plan one.`;
     const days = trip.days
       .map((d) => `D${d.n} ${d.city}: ${d.title} (${d.hours}). Stops: ${d.stops.map((s) => `${s.t} ${s.k}`).join(" | ")}. Note: ${d.note}`)
       .join("\n");
-    return `${AGENT_GROUNDING_RULES}\nTrip: ${trip.title}. ${trip.subtitle}. ${trip.dates}. ${trip.travelers} travelers (${trip.prepared_for}).\n${profileContext(userProfile)}\n${days}`;
+    const uniqueCities = [...new Set(trip.days.map((d) => d.city).filter(Boolean))];
+    const cityLine = uniqueCities.length ? `CITIES IN THIS ITINERARY: ${uniqueCities.join(", ")}` : "";
+    return `${cityLine}\n${AGENT_GROUNDING_RULES}\nTrip: ${trip.title}. ${trip.subtitle}. ${trip.dates}. ${trip.travelers} travelers (${trip.prepared_for}).\n${profileContext(userProfile)}\n${days}`;
   }, [trip, userProfile]);
 
   function handleProfileAnswer(answer) {
@@ -330,7 +333,7 @@ function AgentChat({ trip, userProfile, onProfileUpdate, onPlanGenerated }) {
     } else {
       setMessages((prev) => [...prev, {
         role: "assistant",
-        content: "The trip is locked in! Your flight is already selected, so I can help with hotels next.",
+        content: "The trip is locked in! Your flight is already selected, so I can help with hotels next. Your trip is automatically saved — you can find it anytime under 'Saved trips' in the header.",
       }]);
       setShowBookingChoice(true);
     }
@@ -676,7 +679,7 @@ function AgentChat({ trip, userProfile, onProfileUpdate, onPlanGenerated }) {
         const request = userProfile?.tripRequest || {};
         const destination = normalizeDemoDestination(resolvedDestination) || resolvedDestination;
         const storedDateDays = parseTravelDateRange(sessionAnswers.travelDates || "").days || sessionAnswers.tripDays;
-        const days = daysFromText(q, storedDateDays || (sessionAnswers.tripLength ? daysFromText(sessionAnswers.tripLength) : (request.days || trip.days.length || 5)));
+        const days = daysFromText(q, storedDateDays || (sessionAnswers.tripLength ? daysFromText(sessionAnswers.tripLength) : (request.days || trip?.days?.length || 5)));
         const data = await planTrip({
           prompt: `${AGENT_GROUNDING_RULES}\nUser request: ${q}`,
           destination,
@@ -732,6 +735,34 @@ function AgentChat({ trip, userProfile, onProfileUpdate, onPlanGenerated }) {
         label: "Backend connected",
         detail: prev.detail?.includes("Gemini") ? prev.detail : "FastAPI on localhost:8000",
       }));
+
+      // If the agent regenerated the plan, update the left panel
+      if (data.itinerary && onPlanGenerated) {
+        const prevData = lastPlanDataRef.current;
+        const planRequest = {
+          prompt: q,
+          destination: prevData?.destination || "",
+          days: data.itinerary.days?.length || prevData?.data?.itinerary?.days?.length || 5,
+          startDate: prevData?.data?.start_date || "",
+          endDate: prevData?.data?.end_date || "",
+        };
+        const visibleTrip = normalizeBackendTrip(data, userProfile || {}, planRequest);
+        lastPlanDataRef.current = { data, destination: planRequest.destination, profile: userProfile };
+        onPlanGenerated(data, planRequest);
+        setShowBookingChoice(false);
+        setBookingQueue([]);
+        setBookingQueueIndex(0);
+        setBookingAnswers({});
+        setBookingIntent({ hasFlight: false, hasHotel: false });
+        setAwaitingPlanConfirmation(true);
+        setMessages((prev) => [...prev, {
+          role: "assistant",
+          content: `${data.answer || "Done!"}\n\n${summarizeTripForChat(visibleTrip)}\n\nDoes this look good? I can adjust anything or help with hotels and flights.`,
+          tool_trace: Array.isArray(data.tool_trace) && data.tool_trace.length ? data.tool_trace : null,
+        }]);
+        return;
+      }
+
       const reply = data.answer || "I can help with that, but I need a little more detail.";
       const choices = followUpChoicesForReply(reply);
       setMessages((prev) => [

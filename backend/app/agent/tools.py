@@ -71,6 +71,25 @@ CHAT_TOOLS = [
                 },
             ),
             types.FunctionDeclaration(
+                name="regenerate_plan",
+                description=(
+                    "Regenerate the trip itinerary when the traveler asks to modify the plan. "
+                    "Use this when the traveler wants to: add/remove cities, change which city is on which day, "
+                    "adjust activities, change pace or focus. "
+                    "Extract a clear summary of what the traveler wants changed."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "changes": {
+                            "type": "string",
+                            "description": "Summary of changes the traveler requested (e.g. 'remove Nara, Day 6 should be Osaka', 'add more temples in Kyoto')",
+                        },
+                    },
+                    "required": ["changes"],
+                },
+            ),
+            types.FunctionDeclaration(
                 name="search_hotels",
                 description=(
                     "Find real hotels ONLY in the cities that appear in the itinerary. "
@@ -120,6 +139,8 @@ def dispatch_chat_tool(name: str, args: dict, repository) -> dict:
         return search_flights(args)
     if name == "search_hotels":
         return search_hotels(args)
+    if name == "regenerate_plan":
+        return {"status": "captured", "changes": args.get("changes", "")}
     return {"error": f"Unknown tool: {name}"}
 
 def search_destinations(args: dict, repository) -> dict:
